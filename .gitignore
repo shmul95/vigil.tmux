@@ -1,0 +1,2 @@
+# Planning artifacts live in the personal vault; .planning is a symlink to them.
+.planning
