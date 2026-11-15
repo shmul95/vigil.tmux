@@ -52,10 +52,14 @@ _vigil_write_queue_atomic() {
 #
 # Echoes the current queue contents, defaulting to an empty queue if the
 # file doesn't exist yet. Treats a jq parse failure, or a syntactically
-# valid JSON document that doesn't match the expected {"queue": [...]}
-# shape (e.g. {"queue":null}), as corrupted state (T-02-05) and exits 1
-# with a clear stderr message rather than silently truncating, crashing
-# with a raw jq error, or returning misleading-but-plausible output.
+# valid JSON document that doesn't match the expected
+# {"queue": [{"pane_id": "..."}]} shape -- e.g. {"queue":null} (WR-01,
+# prior iteration) or {"queue":["x"]}/non-object elements (WR-02, this
+# iteration) -- as corrupted state (T-02-05) and exits 1 with a clear
+# stderr message rather than silently truncating, crashing with a raw jq
+# error on a mutating subcommand, or returning misleading-but-plausible
+# output on a read-only one (e.g. peek echoing a bare string instead of
+# the documented corruption error).
 _vigil_read_queue() {
 	local queue_file content
 	queue_file="$(vigil_queue_file)"
@@ -64,7 +68,9 @@ _vigil_read_queue() {
 		return
 	fi
 	content="$(cat "$queue_file")"
-	if ! jq -e 'has("queue") and (.queue | type == "array")' <<<"$content" >/dev/null 2>&1; then
+	if ! jq -e 'has("queue") and (.queue | type == "array") and
+		(.queue | all(type == "object" and has("pane_id") and (.pane_id | type == "string")))' \
+		<<<"$content" >/dev/null 2>&1; then
 		echo "vigil-queue: queue file is corrupted" >&2
 		exit 1
 	fi
