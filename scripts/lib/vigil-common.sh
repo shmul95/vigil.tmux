@@ -13,6 +13,9 @@
 # real $XDG_RUNTIME_DIR). Otherwise resolves to
 # "${XDG_RUNTIME_DIR:-/tmp}/vigil/<socket-name>", where <socket-name> is the
 # basename of $TMUX's socket path component, or "default" if $TMUX is unset.
+# When $XDG_RUNTIME_DIR is unset (the shared, non-UID-scoped /tmp fallback),
+# <socket-name> is further prefixed with the caller's UID to avoid colliding
+# with another local user's identically-named socket.
 vigil_runtime_dir() {
 	if [[ -n "${VIGIL_RUNTIME_DIR:-}" ]]; then
 		printf '%s' "$VIGIL_RUNTIME_DIR"
@@ -26,6 +29,16 @@ vigil_runtime_dir() {
 		socket_name="$(basename "$socket_path")"
 	else
 		socket_name="default"
+	fi
+	# When falling back to the shared /tmp (no $XDG_RUNTIME_DIR), prefix the
+	# socket name with the caller's UID: tmux's own default socket path is
+	# already UID-scoped ("/tmp/tmux-<uid>/..."), but basename() above
+	# discards that component, so two different local users on the same
+	# host would otherwise collide on the identical "/tmp/vigil/default"
+	# path and lock each other out (0700 dir created by whichever user
+	# runs first).
+	if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+		socket_name="$(id -u)-${socket_name}"
 	fi
 	printf '%s/vigil/%s' "$base" "$socket_name"
 }
