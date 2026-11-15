@@ -298,16 +298,27 @@ vigil_refresh_clients() {
 	return 0
 }
 
-# vigil_publish_state [auto] — publish count/auto/rendered status and
-# request an immediate redraw. No-op outside tmux. Callers MUST hold the
-# queue lock (see vigil_with_lock). Every tmux call is best-effort so a
-# dead server cannot fail a queue mutation (D-03/D-05).
+# vigil_publish_state [auto] — publish count/auto/rendered status. No-op
+# outside tmux. Callers MUST hold the queue lock (see vigil_with_lock)
+# for the duration of this call; callers are responsible for calling
+# vigil_release_lock + vigil_refresh_clients themselves AFTER this
+# returns (WR-05) -- the refresh is a redraw request that writes no
+# state, so it does not need to be inside the critical section, and
+# keeping it out bounds the lock-hold time to just the option writes
+# below. Every tmux call is best-effort so a dead server cannot fail a
+# queue mutation (D-03/D-05).
 #
 # CR-01: each tmux invocation below runs in a subshell that closes this
 # process's copy of the lock FD before exec'ing tmux (_vigil_close_lock_fd),
 # so a tmux child that is still running when the holder is killed cannot
 # keep the flock held. The parent process's own hold on the lock is
 # unaffected -- only the forked child's copy is closed.
+#
+# WR-05: the three @vigil_* writes are batched into a SINGLE tmux
+# invocation (tmux's own "cmd1 \; cmd2 \; cmd3" multi-command syntax)
+# instead of three separate execs, shrinking both the number of
+# processes forked and the wall-clock time spent inside the lock's
+# hardcoded 2s timeout.
 vigil_publish_state() {
 	local auto count status
 	if ! vigil_in_tmux; then
@@ -327,15 +338,8 @@ vigil_publish_state() {
 	status="$(vigil_render_status "$count" "$auto")"
 	(
 		_vigil_close_lock_fd
-		tmux set-option -g @vigil_queue_count "$count"
+		tmux set-option -g @vigil_queue_count "$count" \; \
+			set-option -g @vigil_auto "$auto" \; \
+			set-option -g @vigil_status "$status"
 	) 2>/dev/null || true
-	(
-		_vigil_close_lock_fd
-		tmux set-option -g @vigil_auto "$auto"
-	) 2>/dev/null || true
-	(
-		_vigil_close_lock_fd
-		tmux set-option -g @vigil_status "$status"
-	) 2>/dev/null || true
-	vigil_refresh_clients
 }

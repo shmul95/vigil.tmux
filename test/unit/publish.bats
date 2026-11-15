@@ -13,21 +13,39 @@ setup() {
 	mkdir -p "$TMUX_STUB_DIR/bin"
 
 	# Stub tmux: log every invocation, answer show-options/list-clients,
-	# and succeed for everything else.
+	# and succeed for everything else. WR-05 batches multiple
+	# set-option writes into a single tmux invocation using tmux's own
+	# "cmd1 \; cmd2 \; cmd3" multi-command syntax (each "\;" arrives here
+	# as a literal standalone ";" argv element, exactly as real tmux
+	# receives it) -- split on that so each sub-command is still logged
+	# and handled individually, as if it had been its own invocation.
 	cat >"$TMUX_STUB_DIR/bin/tmux" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$TMUX_STUB_LOG"
-case "${1:-}" in
-show-options)
-	opt="${*: -1}"
-	if [[ "$opt" == "@vigil_auto" ]]; then
-		printf '%s' "${TMUX_STUB_AUTO:-}"
+args=("$@")
+n=${#args[@]}
+start=0
+i=0
+while [[ $i -le $n ]]; do
+	if [[ $i -eq $n || "${args[$i]}" == ";" ]]; then
+		if [[ $i -gt $start ]]; then
+			sub=("${args[@]:$start:$((i - start))}")
+			printf '%s\n' "${sub[*]}" >>"$TMUX_STUB_LOG"
+			case "${sub[0]:-}" in
+			show-options)
+				opt="${sub[-1]}"
+				if [[ "$opt" == "@vigil_auto" ]]; then
+					printf '%s' "${TMUX_STUB_AUTO:-}"
+				fi
+				;;
+			list-clients)
+				printf 'client-0\n'
+				;;
+			esac
+		fi
+		start=$((i + 1))
 	fi
-	;;
-list-clients)
-	printf 'client-0\n'
-	;;
-esac
+	i=$((i + 1))
+done
 exit 0
 STUB
 	chmod +x "$TMUX_STUB_DIR/bin/tmux"

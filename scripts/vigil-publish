@@ -4,7 +4,10 @@
 #
 # The publish read-modify-write runs under the same queue lock as
 # vigil-queue mutations so a concurrent enqueue cannot lose the mode flip
-# or leave a stale count published.
+# or leave a stale count published. WR-05: the lock is released via
+# vigil_release_lock as soon as the option writes land, BEFORE the
+# per-client refresh-client walk -- that redraw request writes no state,
+# so it doesn't need to be inside the critical section.
 set -euo pipefail
 
 # shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
@@ -28,3 +31,5 @@ if [[ -n "${1:-}" ]]; then
 else
 	vigil_with_lock vigil_publish_state
 fi
+vigil_release_lock
+vigil_refresh_clients || true

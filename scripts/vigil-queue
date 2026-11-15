@@ -13,8 +13,15 @@ source "${BASH_SOURCE[0]%/*}/lib/vigil-common.sh"
 #
 # Runs a mutating locked command through the shared queue lock, then
 # republishes the UI state. vigil_with_lock keeps the lock FD open until
-# process exit, so the publish below is still inside the critical section
-# (D-03). A publish failure must never fail the mutation (D-05).
+# process exit (or vigil_release_lock is called), so vigil_publish_state
+# below is still inside the critical section (D-03). A publish failure
+# must never fail the mutation (D-05).
+#
+# WR-05: the lock is released via vigil_release_lock as soon as
+# vigil_publish_state's option writes land, BEFORE vigil_refresh_clients
+# walks every attached client -- that redraw request writes no state,
+# so it doesn't need to be inside the critical section, and excluding it
+# bounds the lock-hold time to just the option writes.
 _vigil_mutation() {
 	local status=0
 	vigil_with_lock "$@" || status=$?
@@ -22,6 +29,8 @@ _vigil_mutation() {
 		return "$status"
 	fi
 	vigil_publish_state || true
+	vigil_release_lock
+	vigil_refresh_clients || true
 	return 0
 }
 
