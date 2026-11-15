@@ -47,6 +47,13 @@ _vigil_write_queue_atomic() {
 	queue_file="$(vigil_queue_file)"
 	tmp_file="${queue_file}.tmp.$$"
 	printf '%s' "$content" >"$tmp_file"
+	# WR-07: the temp file (and, via `mv` preserving permissions on a
+	# same-filesystem rename, queue.json itself) is otherwise created
+	# under the caller's ambient umask. Pane IDs and timestamps are
+	# protected by the 0700 leaf directory in the common case, but
+	# chmod explicitly too so the file's own permissions don't depend
+	# on umask at all.
+	chmod 600 "$tmp_file" 2>/dev/null || true
 	if [[ -n "${VIGIL_QUEUE_TEST_DELAY:-}" ]]; then
 		# CR-01: run the fault-injection sleep in a subshell that closes
 		# this process's copy of the lock FD first. Without this, a

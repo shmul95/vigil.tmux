@@ -162,6 +162,14 @@ vigil_ensure_runtime_dir() {
 	mkdir -p "$dir"
 	umask "$old_umask"
 
+	# WR-07: `mkdir -p` is a no-op on an already-existing leaf, so the
+	# `umask 077` above only hardens permissions on first creation --
+	# contradicting the docstring's "hardened every time" claim. chmod
+	# unconditionally so a leaf that ever existed with looser
+	# permissions (older version, restored state, manual creation) is
+	# tightened on every invocation, not just the first.
+	chmod 700 "$dir"
+
 	find "$dir" -maxdepth 1 -name 'queue.json.tmp.*' -mmin +1 -delete 2>/dev/null || true
 }
 
@@ -239,6 +247,13 @@ vigil_with_lock() {
 	vigil_ensure_runtime_dir
 	vigil_release_lock
 	exec {VIGIL_LOCK_FD}>"$lock_file"
+	# WR-07: `exec {FD}>` creates the lock file under the caller's
+	# ambient umask (e.g. 0644 under the common 022), not the 0700 the
+	# leaf directory above is hardened to. The leaf's permissions
+	# protect it via directory traversal in the common case, but chmod
+	# it explicitly too so the file's own permissions match the stated
+	# guarantee regardless of umask.
+	chmod 600 "$lock_file" 2>/dev/null || true
 	if ! flock -w 2 "$VIGIL_LOCK_FD"; then
 		echo "${0##*/}: lock acquisition timed out after 2s" >&2
 		exit 2
