@@ -54,3 +54,18 @@ load '../test_helper'
 	[ "$status" -eq 1 ]
 	[[ "$output" == *"vigil-queue: queue file is corrupted"* ]]
 }
+
+@test "an empty (0-byte) queue file is handled explicitly, not silently" {
+	source "$BATS_TEST_DIRNAME/../../scripts/lib/vigil-common.sh"
+	vigil_ensure_runtime_dir
+	: >"$(vigil_queue_file)"
+
+	run vigil-queue count
+	[ "$status" -eq 0 ]
+	[ "$output" = "0" ]
+
+	run vigil-queue enqueue '%1'
+	[ "$status" -eq 0 ]
+	run vigil-queue count
+	[ "$output" = "1" ]
+}

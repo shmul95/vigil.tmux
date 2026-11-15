@@ -57,7 +57,7 @@ _vigil_write_queue_atomic() {
 _vigil_read_queue() {
 	local queue_file content
 	queue_file="$(vigil_queue_file)"
-	if [[ ! -f "$queue_file" ]]; then
+	if [[ ! -s "$queue_file" ]]; then
 		printf '%s' '{"queue":[]}'
 		return
 	fi
