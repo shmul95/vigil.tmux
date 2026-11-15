@@ -104,6 +104,31 @@ _cmd_dequeue_locked() {
 	_vigil_write_queue_atomic "$updated"
 }
 
+# cmd_rotate — moves the current head to the tail, refreshing its
+# enqueued_at to "now" (Claude's Discretion: a rotated pane re-enters the
+# wait queue as of the moment it was explicitly deferred, not its original
+# arrival time), then prints the new head's pane_id.
+cmd_rotate() {
+	_vigil_with_lock _cmd_rotate_locked
+}
+
+_cmd_rotate_locked() {
+	local current len updated
+	current="$(_vigil_read_queue)"
+	len="$(jq '.queue | length' <<<"$current")"
+
+	if [[ "$len" -eq 0 ]]; then
+		echo "vigil-queue: queue is empty, nothing to rotate" >&2
+		exit 1
+	fi
+
+	updated="$(jq --arg t "$(vigil_now_iso)" \
+		'.queue[0].enqueued_at = $t | .queue += [.queue[0]] | .queue |= .[1:]' <<<"$current")"
+	_vigil_write_queue_atomic "$updated"
+
+	jq -r '.queue[0].pane_id' <<<"$updated"
+}
+
 # cmd_peek — echoes the head entry (longest-waiting pane) or null.
 #
 # No lock needed: atomic mv-based publication guarantees any read sees
@@ -126,6 +151,9 @@ enqueue)
 dequeue)
 	shift
 	cmd_dequeue "$@"
+	;;
+rotate)
+	cmd_rotate
 	;;
 peek)
 	cmd_peek
