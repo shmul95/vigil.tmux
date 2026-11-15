@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # vigil-queue — FIFO queue engine CLI: enqueue/dequeue/peek/count.
 #
-# Standalone: requires no tmux server or kitty process to run. All writes
+# Standalone: requires no running tmux(1) or kitty process. All writes
 # go through a flock-guarded critical section + temp-file + atomic rename;
 # peek/count are lock-free reads (see cmd_peek below for why that's safe).
 set -euo pipefail
@@ -129,6 +129,31 @@ _cmd_rotate_locked() {
 	jq -r '.queue[0].pane_id' <<<"$updated"
 }
 
+# cmd_prune [live_pane_id...] — removes every queue entry whose pane_id is
+# not in the injected live_pane_ids list, preserving the original relative
+# order of survivors. Deliberately never shells out to tmux(1) itself
+# (T-02-08): the caller (a future lifecycle hook) is responsible for
+# sourcing the live list by listing panes via tmux(1); this is the
+# unit-testable seam.
+cmd_prune() {
+	_vigil_with_lock _cmd_prune_locked "$@"
+}
+
+_cmd_prune_locked() {
+	local live_json updated
+	# Build a JSON array from the positional args without ever
+	# string-interpolating them into a jq program (T-02-04). Handles the
+	# zero-arg case: `printf '%s\n'` with no data args still emits one
+	# newline, so split("\n") yields [""], which select(length > 0) drops,
+	# leaving [].
+	live_json="$(printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+	updated="$(_vigil_read_queue | jq --argjson live "$live_json" \
+		'.queue |= map(select(.pane_id as $p | $live | index($p) != null))')"
+	_vigil_write_queue_atomic "$updated"
+
+	jq '.queue | length' <<<"$updated"
+}
+
 # cmd_peek — echoes the head entry (longest-waiting pane) or null.
 #
 # No lock needed: atomic mv-based publication guarantees any read sees
@@ -154,6 +179,10 @@ dequeue)
 	;;
 rotate)
 	cmd_rotate
+	;;
+prune)
+	shift
+	cmd_prune "$@"
 	;;
 peek)
 	cmd_peek
