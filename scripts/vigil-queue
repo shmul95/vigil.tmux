@@ -45,7 +45,7 @@ _vigil_write_queue_atomic() {
 	if [[ -n "${VIGIL_QUEUE_TEST_DELAY:-}" ]]; then
 		sleep "$VIGIL_QUEUE_TEST_DELAY"
 	fi
-	mv -f "$tmp_file" "$queue_file"
+	mv -f "$tmp_file" "$queue_file" # atomic publish: *.tmp.$$ -> queue.json
 }
 
 # _vigil_read_queue
