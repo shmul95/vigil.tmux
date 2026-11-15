@@ -58,6 +58,48 @@ vigil_lock_file() {
 	printf '%s/queue.lock' "$(vigil_runtime_dir)"
 }
 
+# _vigil_assert_safe_dir <path> [skip_owner_check]
+#
+# Refuses to proceed (exit 1) if <path> already exists but is not a plain
+# directory -- e.g. a symlink (or a broken symlink, which fails `-e` but
+# not `-L`) planted by another local user ahead of time, or some other
+# non-directory entry -- closing the CR-01 (iteration 3) symlink/foreign-
+# directory redirection attack on the shared /tmp fallback path: without
+# this check, `mkdir -p` treats "already exists" as success and silently
+# follows whatever is already there, so the leaf runtime dir, queue.json,
+# and the lock-file's truncating `exec {FD}>` open could all land inside
+# an attacker-chosen location instead of a user-controlled one.
+#
+# By default, an existing directory must additionally be owned by the
+# current user. Pass "skip_owner_check" for paths that are intentionally
+# shared across every local user (the sticky 1777 "vigil" parent) -- an
+# ownership check there would reintroduce the shared-parent lockout that
+# a prior iteration's CR-01 fix (edf77c3) specifically closed, since only
+# whichever user created the parent first would ever own it.
+_vigil_assert_safe_dir() {
+	local path="$1" skip_owner_check="${2:-}"
+
+	if [[ -L "$path" ]]; then
+		echo "vigil-queue: refusing to use '$path': is a symlink (possible symlink attack)" >&2
+		exit 1
+	fi
+
+	if [[ -e "$path" ]]; then
+		if [[ ! -d "$path" ]]; then
+			echo "vigil-queue: refusing to use '$path': not a plain directory" >&2
+			exit 1
+		fi
+		if [[ "$skip_owner_check" != "skip_owner_check" ]]; then
+			local owner
+			owner="$(stat -c %u "$path" 2>/dev/null || stat -f %u "$path" 2>/dev/null)"
+			if [[ "$owner" != "$(id -u)" ]]; then
+				echo "vigil-queue: refusing to use '$path': not owned by current user" >&2
+				exit 1
+			fi
+		fi
+	fi
+}
+
 # vigil_ensure_runtime_dir — creates the runtime dir with 0700 permissions.
 #
 # The leaf runtime directory itself is always created with explicit 0700
@@ -93,6 +135,13 @@ vigil_ensure_runtime_dir() {
 	dir="$(vigil_runtime_dir)"
 	parent="${dir%/*}"
 
+	# Reject a pre-existing symlink or foreign-owned entry at either path
+	# component before trusting `mkdir -p`'s "already exists" success
+	# (CR-01, iteration 3). The shared "vigil" parent is intentionally
+	# traversable by every local user (1777), so only its directory-ness
+	# is checked there, not its owner.
+	_vigil_assert_safe_dir "$parent" skip_owner_check
+
 	# Shared "vigil" parent (only present on the /tmp fallback path) must
 	# stay traversable by every local user, like /tmp itself. SC2174 ("-m
 	# only applies to the deepest directory with -p") doesn't apply here:
@@ -101,6 +150,12 @@ vigil_ensure_runtime_dir() {
 	# "vigil" directory and -m always lands on it.
 	# shellcheck disable=SC2174
 	mkdir -p -m 1777 "$parent"
+
+	# The leaf is exclusively this user's (UID-prefixed, see
+	# vigil_runtime_dir), so unlike the shared parent it must additionally
+	# be owned by us -- closing the same symlink-redirection attack at the
+	# leaf itself, not just at the parent.
+	_vigil_assert_safe_dir "$dir"
 
 	old_umask="$(umask)"
 	umask 077
