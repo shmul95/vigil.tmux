@@ -36,7 +36,17 @@ fi
 
 # Append the segment exactly once; never replace the user's status-right (D-02).
 current="$(tmux show-options -gv status-right 2>/dev/null || true)"
-case "$current" in
+# WR-02: tmux treats "##" as an escaped literal "#", so a status-right
+# containing "##{@vigil_status}" (the user displaying that literal text,
+# not referencing the option) must NOT be mistaken for an already-wired
+# marker -- a plain substring search is fooled by it, leaving the plugin
+# believing it has nothing to append. Replace every escaped "##" with a
+# sentinel byte before searching so an escaped occurrence can never
+# satisfy the unescaped pattern below. $current itself is left
+# untouched so the append below still reproduces the user's literal text
+# exactly.
+haystack="${current//'##'/$'\x01'}"
+case "$haystack" in
 *'#{@vigil_status}'*) ;;
 *)
 	if [[ -n "$current" ]]; then

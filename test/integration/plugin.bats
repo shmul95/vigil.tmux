@@ -59,6 +59,42 @@ teardown() {
 	[ "$output" = 'A #{@vigil_status} B' ]
 }
 
+@test "WR-02: an escaped ##{@vigil_status} literal is not mistaken for an already-wired marker" {
+	# tmux renders "##{@vigil_status}" as the literal text "#{@vigil_status}"
+	# (the "##" is an escaped "#"), not as a live reference to the option.
+	# A plain substring guard is fooled by this and never appends a real
+	# marker, so the status line never shows anything.
+	tmux set-option -g status-right 'A ##{@vigil_status} B'
+	vigil_load_plugin
+	run tmux show-options -gv status-right
+	[ "$status" -eq 0 ]
+	# One occurrence is the user's escaped literal text; the other is the
+	# real marker the plugin appended. vigil_marker_count is a plain
+	# substring count, so it legitimately reports 2 here -- the escaped
+	# occurrence is the exact scenario this test exists to cover.
+	[ "$output" = 'A ##{@vigil_status} B #{@vigil_status}' ]
+	[ "$(vigil_marker_count "$output")" -eq 2 ]
+}
+
+@test "WR-02: a marker referenced inside a conditional format is still treated as wired" {
+	# The marker is genuinely present in the user's status-right here
+	# (just conditionally rendered), so the plugin correctly leaves it
+	# alone rather than appending a duplicate occurrence.
+	tmux set-option -g status-right 'A #{?client_prefix,,#{@vigil_status}} B'
+	vigil_load_plugin
+	run tmux show-options -gv status-right
+	[ "$status" -eq 0 ]
+	[ "$output" = 'A #{?client_prefix,,#{@vigil_status}} B' ]
+}
+
+@test "WR-02: a marker referenced inside a #() command substitution is still treated as wired" {
+	tmux set-option -g status-right 'A #(echo #{@vigil_status}) B'
+	vigil_load_plugin
+	run tmux show-options -gv status-right
+	[ "$status" -eq 0 ]
+	[ "$output" = 'A #(echo #{@vigil_status}) B' ]
+}
+
 @test "first load seeds auto off, count zero, and the red status string" {
 	tmux set-option -gu @vigil_auto
 	tmux set-option -gu @vigil_queue_count
