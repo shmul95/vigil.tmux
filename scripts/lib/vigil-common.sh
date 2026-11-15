@@ -26,7 +26,12 @@ vigil_runtime_dir() {
 	base="${XDG_RUNTIME_DIR:-/tmp}"
 	if [[ -n "${TMUX:-}" ]]; then
 		socket_path="${TMUX%%,*}"
-		socket_name="$(basename "$socket_path")"
+		# Hash the FULL socket path, not just its basename (WR-01): two
+		# distinct tmux servers started with e.g. `-S /project-a/default`
+		# and `-S /project-b/default` both have a trailing "default"
+		# filename component, so basename() alone would collapse them
+		# onto the same vigil runtime dir and silently merge their queues.
+		socket_name="$(printf '%s' "$socket_path" | sha1sum | cut -c1-16)"
 	else
 		socket_name="default"
 	fi
