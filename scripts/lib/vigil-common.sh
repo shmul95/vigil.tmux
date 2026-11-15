@@ -55,14 +55,24 @@ vigil_lock_file() {
 
 # vigil_ensure_runtime_dir — creates the runtime dir with 0700 permissions.
 #
-# Always created with explicit 0700 (never relies on ambient umask) per the
-# Information Disclosure mitigation (T-02-03): the runtime dir may live
-# under a world-readable /tmp fallback, so permissions must be hardened
-# every time, not just on first creation. `mkdir -p -m 700` only applies
-# -m to the deepest directory it creates (shellcheck SC2174) — any
-# intermediate directories (e.g. the shared "vigil" parent) would fall
-# back to the ambient umask, so a temporary umask override guarantees
-# every directory created by this call, not just the leaf, is 0700.
+# The leaf runtime directory itself is always created with explicit 0700
+# (never relies on ambient umask) per the Information Disclosure mitigation
+# (T-02-03): the runtime dir may live under a world-readable /tmp fallback,
+# so permissions must be hardened every time, not just on first creation.
+#
+# On the /tmp fallback path (no $XDG_RUNTIME_DIR), the leaf dir has a
+# shared "vigil" parent that every local user's invocation needs to
+# traverse. That parent is deliberately created/kept world-traversable
+# with the sticky bit (mode 1777, like /tmp itself) BEFORE the umask
+# override below — a bare `umask 077; mkdir -p <leaf>` would otherwise
+# apply 0700 to that shared parent too (shellcheck SC2174: `-m` only
+# applies to the deepest directory `mkdir -p` creates, so intermediate
+# dirs still inherit the active umask), permanently locking out every
+# user but whoever ran first (CR-01). Under $XDG_RUNTIME_DIR, the parent
+# is already inside the user's own 0700 "/run/user/<uid>" dir, so forcing
+# it to 1777 there is harmless. Only the leaf is locked to 0700; the
+# UID-prefixed leaf name (see vigil_runtime_dir) still prevents different
+# users' leaf dirs from colliding.
 #
 # Also performs a best-effort sweep of orphaned *.tmp.* files left behind
 # by a writer killed (or crashed) between _vigil_write_queue_atomic's
@@ -74,13 +84,25 @@ vigil_lock_file() {
 # `-mmin +1` threshold (older than 1 minute) avoids racing a write that is
 # still legitimately in flight.
 vigil_ensure_runtime_dir() {
-	local old_umask
+	local dir parent old_umask
+	dir="$(vigil_runtime_dir)"
+	parent="${dir%/*}"
+
+	# Shared "vigil" parent (only present on the /tmp fallback path) must
+	# stay traversable by every local user, like /tmp itself. SC2174 ("-m
+	# only applies to the deepest directory with -p") doesn't apply here:
+	# $parent's own parent ("$base", either /tmp or $XDG_RUNTIME_DIR) is
+	# always pre-existing, so this call only ever creates the single
+	# "vigil" directory and -m always lands on it.
+	# shellcheck disable=SC2174
+	mkdir -p -m 1777 "$parent"
+
 	old_umask="$(umask)"
 	umask 077
-	mkdir -p "$(vigil_runtime_dir)"
+	mkdir -p "$dir"
 	umask "$old_umask"
 
-	find "$(vigil_runtime_dir)" -maxdepth 1 -name 'queue.json.tmp.*' -mmin +1 -delete 2>/dev/null || true
+	find "$dir" -maxdepth 1 -name 'queue.json.tmp.*' -mmin +1 -delete 2>/dev/null || true
 }
 
 # vigil_now_iso — echoes the current UTC time in ISO-8601 format.
