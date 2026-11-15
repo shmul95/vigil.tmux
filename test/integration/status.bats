@@ -89,6 +89,30 @@ teardown() {
 	run tmux display-message -p '#{E:status-right}'
 	[ "$status" -eq 0 ]
 	[ "$output" = "USERSEG $published" ]
+
+	# CR-02: #{E:status-right} bypasses the truncation tmux's own
+	# status-format[0] applies via #{T;=/#{status-right-length}:...}.
+	# Assert against that rendering path too so this test cannot pass
+	# while the segment is actually invisible on screen.
+	run tmux display-message -p '#{T;=/#{status-right-length}:status-right}'
+	[ "$status" -eq 0 ]
+	[ "$output" = "USERSEG $published" ]
+}
+
+@test "CR-02: an existing right segment that fills the default status-right-length still renders the marker" {
+	# 40 literal characters -- exactly tmux's default status-right-length
+	# -- so appending " #{@vigil_status}" would be the first thing
+	# dropped by the #{T;=/#{status-right-length}:...} truncation tmux's
+	# status-format[0] actually applies, unless the plugin widens the
+	# budget to fit it.
+	tmux set-option -g status-right '1234567890123456789012345678901234567890'
+	vigil_load_plugin
+	vigil-queue enqueue '%1'
+	local published
+	published="$(tmux show-options -gv @vigil_status)"
+	run tmux display-message -p '#{T;=/#{status-right-length}:status-right}'
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$published" ]]
 }
 
 @test "status rendering uses published options only and never polls" {

@@ -46,3 +46,21 @@ case "$current" in
 	fi
 	;;
 esac
+
+# CR-02: tmux's status-format[0] renders status-right through
+# #{T;=/#{status-right-length}:status-right}, which keeps only the
+# LEFTMOST status-right-length columns (default 40). Because the Vigil
+# segment is appended at the END of status-right, it is the first thing
+# cut whenever the user's existing segment already fills (or nearly
+# fills) that budget -- so the marker can be wired correctly above and
+# still never render. Verify the marker actually survives that
+# truncation and, if not, widen the limit just enough to fit it.
+# "Vigil" is the one literal substring vigil_render_status() always
+# emits (in both auto states), so it is a stable rendering witness
+# independent of the live count.
+rendered="$(tmux display-message -p '#{T;=/#{status-right-length}:status-right}' 2>/dev/null || true)"
+if [[ "$rendered" != *'Vigil'* ]]; then
+	right_len="$(tmux show-options -gv status-right-length 2>/dev/null || true)"
+	[[ "$right_len" =~ ^[0-9]+$ ]] || right_len=40
+	tmux set-option -g status-right-length "$((right_len + 24))"
+fi
