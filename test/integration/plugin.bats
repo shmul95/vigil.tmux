@@ -119,6 +119,35 @@ teardown() {
 	[ "$(tmux show-options -gv status-interval)" = "$VIGIL_TEST_INTERVAL_BEFORE" ]
 }
 
+@test "WR-03: a failed status-right read leaves status-right untouched and exits 0" {
+	# Simulate show-options failing for status-right specifically (a tmux
+	# shim missing the command, a transient server failure, ...) by
+	# wrapping the real tmux binary in a stub that fails only for that
+	# one read and delegates everything else unchanged.
+	local real_tmux stub_dir before after
+	real_tmux="$(command -v tmux)"
+	stub_dir="$(mktemp -d)"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "show-options" && "\$*" == *"status-right"* && "\$*" != *"status-right-length"* ]]; then
+	exit 1
+fi
+exec "$real_tmux" "\$@"
+STUB
+	chmod +x "$stub_dir/tmux"
+
+	before="$(tmux show-options -gv status-right)"
+
+	PATH="$stub_dir:$PATH" run bash "$BATS_TEST_DIRNAME/../../vigil.tmux"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"unable to read status-right"* ]]
+
+	after="$(tmux show-options -gv status-right)"
+	[ "$after" = "$before" ]
+
+	rm -rf "$stub_dir"
+}
+
 @test "status-right and @vigil_status contain no command substitution" {
 	run tmux show-options -gv status-right
 	[[ "$output" != *'#('* ]]

@@ -35,7 +35,26 @@ if [[ -z "$status" ]]; then
 fi
 
 # Append the segment exactly once; never replace the user's status-right (D-02).
-current="$(tmux show-options -gv status-right 2>/dev/null || true)"
+#
+# WR-03: unlike the @vigil_* user options above (which have no value at
+# all until first seeded -- show-options legitimately fails with "exit
+# 1" on EVERY first load, so failure there is the expected signal to
+# seed a default, not an anomaly), status-right is a built-in tmux
+# option that always has a value (tmux's own default if the user never
+# set one), so show-options on it succeeds in every normal case,
+# including an explicitly empty string. A failed read here is therefore
+# unambiguous and must not be conflated with "empty": `2>/dev/null` only
+# discards the stderr text, the failure is still observable via the
+# command's own exit status. If the read ever does fail (a tmux shim
+# missing show-options, a transient server failure, a future option
+# rename) while the following set-option still succeeds, treating the
+# failure as "empty" would overwrite the user's real status-right with
+# nothing but the Vigil marker -- exactly the data loss D-02 exists to
+# prevent. Refuse to modify status-right at all rather than risk that.
+if ! current="$(tmux show-options -gv status-right 2>/dev/null)"; then
+	echo "vigil: unable to read status-right; leaving it unchanged" >&2
+	exit 0
+fi
 # WR-02: tmux treats "##" as an escaped literal "#", so a status-right
 # containing "##{@vigil_status}" (the user displaying that literal text,
 # not referencing the option) must NOT be mistaken for an already-wired
