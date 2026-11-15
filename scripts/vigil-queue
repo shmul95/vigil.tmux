@@ -39,9 +39,24 @@ _vigil_write_queue_atomic() {
 	tmp_file="${queue_file}.tmp.$$"
 	printf '%s' "$content" >"$tmp_file"
 	if [[ -n "${VIGIL_QUEUE_TEST_DELAY:-}" ]]; then
-		sleep "$VIGIL_QUEUE_TEST_DELAY"
+		# CR-01: run the fault-injection sleep in a subshell that closes
+		# this process's copy of the lock FD first. Without this, a
+		# SIGKILL to the holder while this sleep is still running leaves
+		# an orphaned `sleep` holding a copy of the lock's file
+		# description, and flock keeps the lock held until that orphan
+		# also exits -- dropping the next mutation with exit 2.
+		(
+			_vigil_close_lock_fd
+			sleep "$VIGIL_QUEUE_TEST_DELAY"
+		)
 	fi
-	mv -f "$tmp_file" "$queue_file" # atomic publish: *.tmp.$$ -> queue.json
+	# Same reasoning applies to `mv`: it is quick in practice, but if the
+	# holder is killed mid-rename, an inherited lock FD would still keep
+	# the orphaned `mv` -- however briefly -- holding the lock.
+	(
+		_vigil_close_lock_fd
+		mv -f "$tmp_file" "$queue_file"
+	) # atomic publish: *.tmp.$$ -> queue.json
 }
 
 # _vigil_read_queue
@@ -64,9 +79,12 @@ _vigil_read_queue() {
 		return
 	fi
 	content="$(cat "$queue_file")"
-	if ! jq -e 'has("queue") and (.queue | type == "array") and
-		(.queue | all(type == "object" and has("pane_id") and (.pane_id | type == "string")))' \
-		<<<"$content" >/dev/null 2>&1; then
+	if ! (
+		_vigil_close_lock_fd
+		jq -e 'has("queue") and (.queue | type == "array") and
+			(.queue | all(type == "object" and has("pane_id") and (.pane_id | type == "string")))' \
+			<<<"$content" >/dev/null 2>&1
+	); then
 		echo "vigil-queue: queue file is corrupted" >&2
 		exit 1
 	fi
@@ -84,12 +102,18 @@ _cmd_enqueue_locked() {
 	local current updated
 	current="$(_vigil_read_queue)"
 
-	if jq -e --arg p "$pane_id" '.queue[] | select(.pane_id == $p)' <<<"$current" >/dev/null; then
+	if (
+		_vigil_close_lock_fd
+		jq -e --arg p "$pane_id" '.queue[] | select(.pane_id == $p)' <<<"$current" >/dev/null
+	); then
 		return 0
 	fi
 
-	updated="$(jq --arg p "$pane_id" --arg t "$(vigil_now_iso)" \
-		'.queue += [{"pane_id":$p,"enqueued_at":$t}]' <<<"$current")"
+	updated="$(
+		_vigil_close_lock_fd
+		jq --arg p "$pane_id" --arg t "$(vigil_now_iso)" \
+			'.queue += [{"pane_id":$p,"enqueued_at":$t}]' <<<"$current"
+	)"
 	_vigil_write_queue_atomic "$updated"
 }
 
@@ -104,7 +128,10 @@ _cmd_dequeue_locked() {
 	local pane_id="$1"
 	local current updated
 	current="$(_vigil_read_queue)"
-	updated="$(jq --arg p "$pane_id" '.queue |= map(select(.pane_id != $p))' <<<"$current")"
+	updated="$(
+		_vigil_close_lock_fd
+		jq --arg p "$pane_id" '.queue |= map(select(.pane_id != $p))' <<<"$current"
+	)"
 	_vigil_write_queue_atomic "$updated"
 }
 
@@ -119,18 +146,27 @@ cmd_rotate() {
 _cmd_rotate_locked() {
 	local current len updated
 	current="$(_vigil_read_queue)"
-	len="$(jq '.queue | length' <<<"$current")"
+	len="$(
+		_vigil_close_lock_fd
+		jq '.queue | length' <<<"$current"
+	)"
 
 	if [[ "$len" -eq 0 ]]; then
 		echo "vigil-queue: queue is empty, nothing to rotate" >&2
 		exit 1
 	fi
 
-	updated="$(jq --arg t "$(vigil_now_iso)" \
-		'.queue[0].enqueued_at = $t | .queue += [.queue[0]] | .queue |= .[1:]' <<<"$current")"
+	updated="$(
+		_vigil_close_lock_fd
+		jq --arg t "$(vigil_now_iso)" \
+			'.queue[0].enqueued_at = $t | .queue += [.queue[0]] | .queue |= .[1:]' <<<"$current"
+	)"
 	_vigil_write_queue_atomic "$updated"
 
-	jq -r '.queue[0].pane_id' <<<"$updated"
+	(
+		_vigil_close_lock_fd
+		jq -r '.queue[0].pane_id' <<<"$updated"
+	)
 }
 
 # cmd_prune [live_pane_id...] — removes every queue entry whose pane_id is
@@ -150,12 +186,21 @@ _cmd_prune_locked() {
 	# zero-arg case: `printf '%s\n'` with no data args still emits one
 	# newline, so split("\n") yields [""], which select(length > 0) drops,
 	# leaving [].
-	live_json="$(printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
-	updated="$(_vigil_read_queue | jq --argjson live "$live_json" \
-		'.queue |= map(select(.pane_id as $p | $live | index($p) != null))')"
+	live_json="$(
+		_vigil_close_lock_fd
+		printf '%s\n' "$@" | jq -R -s -c 'split("\n") | map(select(length > 0))'
+	)"
+	updated="$(
+		_vigil_close_lock_fd
+		_vigil_read_queue | jq --argjson live "$live_json" \
+			'.queue |= map(select(.pane_id as $p | $live | index($p) != null))'
+	)"
 	_vigil_write_queue_atomic "$updated"
 
-	jq '.queue | length' <<<"$updated"
+	(
+		_vigil_close_lock_fd
+		jq '.queue | length' <<<"$updated"
+	)
 }
 
 # cmd_peek — echoes the head entry (longest-waiting pane) or null.

@@ -170,17 +170,59 @@ vigil_now_iso() {
 	date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+# _vigil_close_lock_fd — closes this process's copy of the held lock FD
+# (if any) in the CURRENT shell context. Harmless no-op when no lock is
+# held (VIGIL_LOCK_FD unset).
+#
+# CR-01: `exec {VIGIL_LOCK_FD}>"$lock_file"` does not set close-on-exec,
+# so every child process forked while the lock is held (jq, mv, tmux,
+# the fault-injection sleep, ...) inherits its own copy of that
+# descriptor. flock is attached to the open file description, so the
+# kernel keeps the advisory lock alive until *every* copy is closed --
+# not just until the nominal holder exits. If the holder is killed while
+# such a child is still running, the orphaned child keeps the lock held
+# indefinitely, and the next mutation times out after `flock -w 2` and
+# exits 2 (the mutation is dropped).
+#
+# Call sites MUST invoke this at the top of a literal subshell -- "( ... )"
+# or the subshell a command substitution "$( ... )" already creates --
+# immediately before spawning the child that must not inherit the lock.
+# Because `exec` inside a subshell only mutates that subshell's own FD
+# table, the parent process (and its real hold on the lock) is untouched;
+# only the forked child that follows loses its copy of the descriptor.
+_vigil_close_lock_fd() {
+	if [[ -n "${VIGIL_LOCK_FD:-}" ]]; then
+		exec {VIGIL_LOCK_FD}>&-
+	fi
+}
+
+# vigil_release_lock — closes the currently held lock FD in THIS shell
+# (not a subshell), actually releasing the flock early so the caller can
+# do further best-effort work (e.g. refresh-client, WR-05) without that
+# work being gated inside the critical section. Safe to call when no
+# lock is held. Unlike _vigil_close_lock_fd, this is meant to be called
+# directly (no subshell wrapper) by the real lock holder.
+vigil_release_lock() {
+	if [[ -n "${VIGIL_LOCK_FD:-}" ]]; then
+		exec {VIGIL_LOCK_FD}>&-
+		unset VIGIL_LOCK_FD
+	fi
+}
+
 # vigil_with_lock <fn> [args...]
 #
 # Acquires an exclusive flock on the dedicated queue.lock file (never the
 # queue file itself) before running <fn>, and leaves the FD open so the
-# lock remains held until the process exits. A 2s wait timeout means a
-# stuck/dead lock holder fails loudly (exit 2) rather than hanging the
-# caller indefinitely (D-06/D-12). No stale-lock cleanup is needed: flock
-# is a kernel-level advisory lock that releases automatically if the
-# holding process dies (D-08). Both vigil-queue mutations and
-# vigil-publish mode flips MUST go through this helper so neither can
-# read-modify-write @vigil_* state concurrently (T-03-03).
+# lock remains held until the process exits (or vigil_release_lock is
+# called explicitly). A 2s wait timeout means a stuck/dead lock holder
+# fails loudly (exit 2) rather than hanging the caller indefinitely
+# (D-06/D-12). No stale-lock cleanup is needed: flock is a kernel-level
+# advisory lock that releases automatically once every copy of its
+# descriptor is closed, including by process exit (D-08) -- see
+# _vigil_close_lock_fd above for why children must not keep their own
+# copy. Both vigil-queue mutations and vigil-publish mode flips MUST go
+# through this helper so neither can read-modify-write @vigil_* state
+# concurrently (T-03-03).
 #
 # Do not call this from vigil.tmux: it may exit on lock timeout.
 vigil_with_lock() {
@@ -232,11 +274,17 @@ vigil_render_status() {
 vigil_refresh_clients() {
 	local clients client
 	vigil_in_tmux || return 0
-	clients="$(tmux list-clients -F '#{client_name}' 2>/dev/null || true)"
+	clients="$(
+		_vigil_close_lock_fd
+		tmux list-clients -F '#{client_name}' 2>/dev/null || true
+	)"
 	[[ -n "$clients" ]] || return 0
 	while IFS= read -r client; do
 		[[ -n "$client" ]] || continue
-		tmux refresh-client -S -t "$client" 2>/dev/null || true
+		(
+			_vigil_close_lock_fd
+			tmux refresh-client -S -t "$client"
+		) 2>/dev/null || true
 	done <<<"$clients"
 	return 0
 }
@@ -245,6 +293,12 @@ vigil_refresh_clients() {
 # request an immediate redraw. No-op outside tmux. Callers MUST hold the
 # queue lock (see vigil_with_lock). Every tmux call is best-effort so a
 # dead server cannot fail a queue mutation (D-03/D-05).
+#
+# CR-01: each tmux invocation below runs in a subshell that closes this
+# process's copy of the lock FD before exec'ing tmux (_vigil_close_lock_fd),
+# so a tmux child that is still running when the holder is killed cannot
+# keep the flock held. The parent process's own hold on the lock is
+# unaffected -- only the forked child's copy is closed.
 vigil_publish_state() {
 	local auto count status
 	if ! vigil_in_tmux; then
@@ -252,15 +306,27 @@ vigil_publish_state() {
 	fi
 	auto="${1:-}"
 	if [[ -z "$auto" ]]; then
-		auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+		auto="$(
+			_vigil_close_lock_fd
+			tmux show-options -gv @vigil_auto 2>/dev/null || true
+		)"
 	fi
 	if [[ "$auto" != "on" ]]; then
 		auto="off"
 	fi
 	count="$(vigil_read_queue_count)"
 	status="$(vigil_render_status "$count" "$auto")"
-	tmux set-option -g @vigil_queue_count "$count" 2>/dev/null || true
-	tmux set-option -g @vigil_auto "$auto" 2>/dev/null || true
-	tmux set-option -g @vigil_status "$status" 2>/dev/null || true
+	(
+		_vigil_close_lock_fd
+		tmux set-option -g @vigil_queue_count "$count"
+	) 2>/dev/null || true
+	(
+		_vigil_close_lock_fd
+		tmux set-option -g @vigil_auto "$auto"
+	) 2>/dev/null || true
+	(
+		_vigil_close_lock_fd
+		tmux set-option -g @vigil_status "$status"
+	) 2>/dev/null || true
 	vigil_refresh_clients
 }
