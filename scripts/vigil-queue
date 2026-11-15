@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# vigil-queue — FIFO queue engine CLI: enqueue/dequeue/peek/count.
+#
+# Standalone: requires no tmux server or kitty process to run. All writes
+# go through a flock-guarded critical section + temp-file + atomic rename;
+# peek/count are lock-free reads (see cmd_peek below for why that's safe).
+set -euo pipefail
+
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "${BASH_SOURCE[0]%/*}/lib/vigil-common.sh"
+
+# _vigil_with_lock <fn> [args...]
+#
+# Acquires an exclusive flock on the dedicated queue.lock file (never the
+# queue file itself) before running <fn>, and releases it when <fn>
+# returns. A 2s wait timeout means a stuck/dead lock holder fails loudly
+# (exit 2) rather than hanging the caller indefinitely (D-06/D-12). No
+# stale-lock cleanup is needed: flock is a kernel-level advisory lock that
+# releases automatically if the holding process dies (D-08).
+_vigil_with_lock() {
+	local lock_file
+	lock_file="$(vigil_lock_file)"
+	vigil_ensure_runtime_dir
+	exec {VIGIL_LOCK_FD}>"$lock_file"
+	if ! flock -w 2 "$VIGIL_LOCK_FD"; then
+		echo "vigil-queue: lock acquisition timed out after 2s" >&2
+		exit 2
+	fi
+	"$@"
+}
+
+# _vigil_write_queue_atomic <json>
+#
+# Writes <json> to a same-directory temp file, then atomically `mv`s it
+# onto the real queue file. VIGIL_QUEUE_TEST_DELAY is a deliberate
+# fault-injection seam (Plan 03's crash-safety tests): if set, it sleeps
+# between the tmp-file write and the mv, never before the write, so a
+# process killed mid-delay still leaves the old queue file intact.
+_vigil_write_queue_atomic() {
+	local content="$1"
+	local queue_file tmp_file
+	queue_file="$(vigil_queue_file)"
+	tmp_file="${queue_file}.tmp.$$"
+	printf '%s' "$content" >"$tmp_file"
+	if [[ -n "${VIGIL_QUEUE_TEST_DELAY:-}" ]]; then
+		sleep "$VIGIL_QUEUE_TEST_DELAY"
+	fi
+	mv -f "$tmp_file" "$queue_file"
+}
+
+# _vigil_read_queue
+#
+# Echoes the current queue contents, defaulting to an empty queue if the
+# file doesn't exist yet. Treats a jq parse failure as corrupted state
+# (T-02-05) and exits 1 with a clear stderr message rather than silently
+# truncating or crashing.
+_vigil_read_queue() {
+	local queue_file content
+	queue_file="$(vigil_queue_file)"
+	if [[ ! -f "$queue_file" ]]; then
+		printf '%s' '{"queue":[]}'
+		return
+	fi
+	content="$(cat "$queue_file")"
+	if ! jq empty <<<"$content" >/dev/null 2>&1; then
+		echo "vigil-queue: queue file is corrupted" >&2
+		exit 1
+	fi
+	printf '%s' "$content"
+}
+
+# cmd_enqueue <pane_id> — idempotent append under lock.
+cmd_enqueue() {
+	local pane_id="${1:?pane_id required}"
+	_vigil_with_lock _cmd_enqueue_locked "$pane_id"
+}
+
+_cmd_enqueue_locked() {
+	local pane_id="$1"
+	local current updated
+	current="$(_vigil_read_queue)"
+
+	if jq -e --arg p "$pane_id" '.queue[] | select(.pane_id == $p)' <<<"$current" >/dev/null; then
+		exit 0
+	fi
+
+	updated="$(jq --arg p "$pane_id" --arg t "$(vigil_now_iso)" \
+		'.queue += [{"pane_id":$p,"enqueued_at":$t}]' <<<"$current")"
+	_vigil_write_queue_atomic "$updated"
+}
+
+# cmd_dequeue <pane_id> — removes the entry if present; unconditional no-op
+# write if absent (the filter simply keeps everything).
+cmd_dequeue() {
+	local pane_id="${1:?pane_id required}"
+	_vigil_with_lock _cmd_dequeue_locked "$pane_id"
+}
+
+_cmd_dequeue_locked() {
+	local pane_id="$1"
+	local current updated
+	current="$(_vigil_read_queue)"
+	updated="$(jq --arg p "$pane_id" '.queue |= map(select(.pane_id != $p))' <<<"$current")"
+	_vigil_write_queue_atomic "$updated"
+}
+
+# cmd_peek — echoes the head entry (longest-waiting pane) or null.
+#
+# No lock needed: atomic mv-based publication guarantees any read sees
+# either the complete old file or the complete new file, never a partial
+# one, so peek/count are lock-free by design.
+cmd_peek() {
+	_vigil_read_queue | jq '.queue[0] // null'
+}
+
+# cmd_count — echoes the number of entries currently queued.
+cmd_count() {
+	_vigil_read_queue | jq '.queue | length'
+}
+
+case "${1:-}" in
+enqueue)
+	shift
+	cmd_enqueue "$@"
+	;;
+dequeue)
+	shift
+	cmd_dequeue "$@"
+	;;
+peek)
+	cmd_peek
+	;;
+count)
+	cmd_count
+	;;
+*)
+	echo "vigil-queue: unknown subcommand '${1:-}'" >&2
+	exit 1
+	;;
+esac
