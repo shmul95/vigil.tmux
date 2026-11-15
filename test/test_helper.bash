@@ -7,11 +7,17 @@
 # the script under test regardless of which test/<suite>/*.bats file loads
 # this helper.
 
-setup() {
+setup_vigil_runtime() {
 	export VIGIL_RUNTIME_DIR="$(mktemp -d)"
 	export PATH="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)/scripts:${PATH}"
+	# Unit tests must never publish to a developer's live multiplexer.
+	unset TMUX
+}
+
+setup() {
+	setup_vigil_runtime
 }
 
 teardown() {
-	rm -rf "$VIGIL_RUNTIME_DIR"
+	rm -rf "${VIGIL_RUNTIME_DIR:-}"
 }

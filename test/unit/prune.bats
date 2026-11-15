@@ -53,10 +53,14 @@ load '../test_helper'
 	[ "$output" = "3" ]
 }
 
-@test "vigil-queue never shells out to tmux directly (test seam contract)" {
-	run grep -c 'tmux ' "$BATS_TEST_DIRNAME/../../scripts/vigil-queue"
+@test "vigil-queue never lists panes or probes liveness itself (test seam contract)" {
+	local src="$BATS_TEST_DIRNAME/../../scripts/vigil-queue"
+
+	# Pane discovery stays the caller's job (T-02-08). Use comment-filtered
+	# counts so header prose can never satisfy or break the invariant.
+	run bash -c "grep -v '^[[:space:]]*#' '$src' | grep -c 'list-panes'"
 	[ "$output" = "0" ]
 
-	run grep -c 'list-panes' "$BATS_TEST_DIRNAME/../../scripts/vigil-queue"
+	run bash -c "grep -v '^[[:space:]]*#' '$src' | grep -cE 'has-session|list-sessions|display-message'"
 	[ "$output" = "0" ]
 }

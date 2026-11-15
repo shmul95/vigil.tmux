@@ -169,3 +169,98 @@ vigil_ensure_runtime_dir() {
 vigil_now_iso() {
 	date -u +%Y-%m-%dT%H:%M:%SZ
 }
+
+# vigil_with_lock <fn> [args...]
+#
+# Acquires an exclusive flock on the dedicated queue.lock file (never the
+# queue file itself) before running <fn>, and leaves the FD open so the
+# lock remains held until the process exits. A 2s wait timeout means a
+# stuck/dead lock holder fails loudly (exit 2) rather than hanging the
+# caller indefinitely (D-06/D-12). No stale-lock cleanup is needed: flock
+# is a kernel-level advisory lock that releases automatically if the
+# holding process dies (D-08). Both vigil-queue mutations and
+# vigil-publish mode flips MUST go through this helper so neither can
+# read-modify-write @vigil_* state concurrently (T-03-03).
+#
+# Do not call this from vigil.tmux: it may exit on lock timeout.
+vigil_with_lock() {
+	local lock_file
+	lock_file="$(vigil_lock_file)"
+	vigil_ensure_runtime_dir
+	exec {VIGIL_LOCK_FD}>"$lock_file"
+	if ! flock -w 2 "$VIGIL_LOCK_FD"; then
+		echo "${0##*/}: lock acquisition timed out after 2s" >&2
+		exit 2
+	fi
+	"$@"
+}
+
+# vigil_in_tmux — 0 only when $TMUX is non-empty and tmux is on PATH.
+vigil_in_tmux() {
+	[[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1
+}
+
+# vigil_read_queue_count — echoes an integer >= 0; 0 when queue.json is
+# absent, unreadable, or not {"queue":[...]}.
+vigil_read_queue_count() {
+	local queue_file count
+	queue_file="$(vigil_queue_file)"
+	if [[ ! -s "$queue_file" ]]; then
+		printf '0'
+		return 0
+	fi
+	count="$(jq -r 'if (.queue | type) == "array" then (.queue | length) else empty end' "$queue_file" 2>/dev/null || true)"
+	if [[ -z "$count" ]]; then
+		count=0
+	fi
+	printf '%s' "$count"
+}
+
+# vigil_render_status <count> <auto> — the ONLY place the status format
+# string is built. Uses no pane-derived data and no #() command
+# substitution (Pitfall 5).
+vigil_render_status() {
+	local count="$1" auto="$2"
+	if [[ "$auto" == "on" ]]; then
+		printf '#[fg=white]%s Vigil #[fg=green]●#[default]' "$count"
+	else
+		printf '%s Vigil #[fg=red]●#[default]' "$count"
+	fi
+}
+
+# vigil_refresh_clients — per-client status refresh; no-op when detached.
+vigil_refresh_clients() {
+	local clients client
+	vigil_in_tmux || return 0
+	clients="$(tmux list-clients -F '#{client_name}' 2>/dev/null || true)"
+	[[ -n "$clients" ]] || return 0
+	while IFS= read -r client; do
+		[[ -n "$client" ]] || continue
+		tmux refresh-client -S -t "$client" 2>/dev/null || true
+	done <<<"$clients"
+	return 0
+}
+
+# vigil_publish_state [auto] — publish count/auto/rendered status and
+# request an immediate redraw. No-op outside tmux. Callers MUST hold the
+# queue lock (see vigil_with_lock). Every tmux call is best-effort so a
+# dead server cannot fail a queue mutation (D-03/D-05).
+vigil_publish_state() {
+	local auto count status
+	if ! vigil_in_tmux; then
+		return 0
+	fi
+	auto="${1:-}"
+	if [[ -z "$auto" ]]; then
+		auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+	fi
+	if [[ "$auto" != "on" ]]; then
+		auto="off"
+	fi
+	count="$(vigil_read_queue_count)"
+	status="$(vigil_render_status "$count" "$auto")"
+	tmux set-option -g @vigil_queue_count "$count" 2>/dev/null || true
+	tmux set-option -g @vigil_auto "$auto" 2>/dev/null || true
+	tmux set-option -g @vigil_status "$status" 2>/dev/null || true
+	vigil_refresh_clients
+}

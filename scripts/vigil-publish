@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# vigil-publish — publish Vigil's status options and request an immediate
+# status-line redraw. Optional first argument flips auto mode: on|off.
+#
+# The publish read-modify-write runs under the same queue lock as
+# vigil-queue mutations so a concurrent enqueue cannot lose the mode flip
+# or leave a stale count published.
+set -euo pipefail
+
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "${BASH_SOURCE[0]%/*}/lib/vigil-common.sh"
+
+case "${1:-}" in
+"" | on | off) ;;
+*)
+	echo "vigil-publish: expected 'on', 'off', or no argument" >&2
+	exit 1
+	;;
+esac
+
+# Outside tmux this is a silent no-op with no filesystem side effects (D-05).
+if ! vigil_in_tmux; then
+	exit 0
+fi
+
+if [[ -n "${1:-}" ]]; then
+	vigil_with_lock vigil_publish_state "$1"
+else
+	vigil_with_lock vigil_publish_state
+fi
