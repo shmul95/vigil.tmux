@@ -1,2 +1,6 @@
 # Planning artifacts live in the personal vault; .planning is a symlink to them.
 .planning
+
+# Nix build/direnv artifacts
+result
+.direnv/
