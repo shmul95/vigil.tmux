@@ -51,9 +51,11 @@ _vigil_write_queue_atomic() {
 # _vigil_read_queue
 #
 # Echoes the current queue contents, defaulting to an empty queue if the
-# file doesn't exist yet. Treats a jq parse failure as corrupted state
-# (T-02-05) and exits 1 with a clear stderr message rather than silently
-# truncating or crashing.
+# file doesn't exist yet. Treats a jq parse failure, or a syntactically
+# valid JSON document that doesn't match the expected {"queue": [...]}
+# shape (e.g. {"queue":null}), as corrupted state (T-02-05) and exits 1
+# with a clear stderr message rather than silently truncating, crashing
+# with a raw jq error, or returning misleading-but-plausible output.
 _vigil_read_queue() {
 	local queue_file content
 	queue_file="$(vigil_queue_file)"
@@ -62,7 +64,7 @@ _vigil_read_queue() {
 		return
 	fi
 	content="$(cat "$queue_file")"
-	if ! jq empty <<<"$content" >/dev/null 2>&1; then
+	if ! jq -e 'has("queue") and (.queue | type == "array")' <<<"$content" >/dev/null 2>&1; then
 		echo "vigil-queue: queue file is corrupted" >&2
 		exit 1
 	fi
