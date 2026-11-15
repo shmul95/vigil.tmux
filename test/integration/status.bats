@@ -115,6 +115,25 @@ teardown() {
 	[[ "$output" == *"$published" ]]
 }
 
+@test "WR-05: 5 concurrent enqueues against the real isolated server never time out" {
+	# Unlike queue_publish.bats's stub-based WR-05 regression test, this
+	# drives the shrunk critical section against an actual tmux server,
+	# so the per-client refresh-client walk this plugin triggers is a
+	# real tmux round trip, not a near-free stub call.
+	local pids=() pid i wstatus
+	for i in 1 2 3 4 5; do
+		vigil-queue enqueue "%wr05-$i" &
+		pids+=("$!")
+	done
+	for pid in "${pids[@]}"; do
+		wstatus=0
+		wait "$pid" || wstatus=$?
+		[ "$wstatus" -ne 2 ]
+	done
+	[ "$(vigil-queue count)" = "5" ]
+	[ "$(tmux show-options -gv @vigil_queue_count)" = "5" ]
+}
+
 @test "status rendering uses published options only and never polls" {
 	vigil-queue enqueue '%1'
 	[ "$(tmux show-options -gv status-interval)" = '60' ]
