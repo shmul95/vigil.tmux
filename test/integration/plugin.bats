@@ -119,6 +119,34 @@ teardown() {
 	[ "$(tmux show-options -gv status-interval)" = "$VIGIL_TEST_INTERVAL_BEFORE" ]
 }
 
+@test "WR-06: a fresh server picks up the persisted queue count instead of fabricating zero" {
+	# Simulate a tmux restart: the @vigil_* options are gone (as they
+	# would be on a brand-new server), but queue.json persists across
+	# the restart because it's keyed by socket path, not by option
+	# state.
+	vigil-queue enqueue '%1'
+	vigil-queue enqueue '%2'
+	tmux set-option -gu @vigil_auto
+	tmux set-option -gu @vigil_queue_count
+	tmux set-option -gu @vigil_status
+	vigil_load_plugin
+	[ "$(tmux show-options -gv @vigil_queue_count)" = '2' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '2 Vigil #[fg=red]●#[default]' ]
+}
+
+@test "WR-06: a non-numeric pre-existing @vigil_queue_count is repaired from the persisted queue" {
+	vigil-queue enqueue '%1'
+	tmux set-option -g @vigil_queue_count 'garbage'
+	vigil_load_plugin
+	[ "$(tmux show-options -gv @vigil_queue_count)" = '1' ]
+}
+
+@test "WR-06: a non-on/off pre-existing @vigil_auto is sanitized to off" {
+	tmux set-option -g @vigil_auto 'garbage'
+	vigil_load_plugin
+	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
+}
+
 @test "WR-03: a failed status-right read leaves status-right untouched and exits 0" {
 	# Simulate show-options failing for status-right specifically (a tmux
 	# shim missing the command, a transient server failure, ...) by

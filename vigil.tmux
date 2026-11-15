@@ -14,22 +14,39 @@ if ! command -v tmux >/dev/null 2>&1 || [[ -z "${TMUX:-}" ]]; then
 	exit 0
 fi
 
-auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
-if [[ -z "$auto" ]]; then
-	auto="off"
+# Sanitize @vigil_auto to exactly "on"/"off" and rewrite the option only
+# when the sanitized value actually differs from what was read (covers
+# both "unset" and an invalid pre-existing value, e.g. a bogus manual
+# `tmux set-option -g @vigil_auto garbage`) -- WR-06, part 2: downstream
+# consumers of the documented option contract must never see anything
+# but "on" or "off".
+raw_auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+auto="$raw_auto"
+[[ "$auto" == "on" ]] || auto="off"
+if [[ "$auto" != "$raw_auto" ]]; then
 	tmux set-option -g @vigil_auto "$auto"
 fi
 
-count="$(tmux show-options -gv @vigil_queue_count 2>/dev/null || true)"
-if [[ -z "$count" ]]; then
-	count="0"
+# WR-06, part 1: a fresh tmux server (restart/crash) has no @vigil_*
+# options, but queue.json persists across that restart (it's keyed by
+# socket path). Fabricating 0 here regardless would report an incorrect
+# count until the next mutation. Derive the seeded value from the
+# ACTUAL persisted queue instead -- vigil_read_queue_count is read-only
+# (never creates the runtime dir), so the "first load seeds without
+# resolving the runtime dir" contract still holds for a genuinely fresh
+# runtime dir. Also repairs a non-numeric pre-existing value the same
+# way @vigil_auto is sanitized above.
+raw_count="$(tmux show-options -gv @vigil_queue_count 2>/dev/null || true)"
+count="$raw_count"
+if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+	count="$(vigil_read_queue_count)"
+fi
+if [[ "$count" != "$raw_count" ]]; then
 	tmux set-option -g @vigil_queue_count "$count"
 fi
 
 status="$(tmux show-options -gv @vigil_status 2>/dev/null || true)"
 if [[ -z "$status" ]]; then
-	[[ "$count" =~ ^[0-9]+$ ]] || count=0
-	[[ "$auto" == "on" ]] || auto=off
 	status="$(vigil_render_status "$count" "$auto")"
 	tmux set-option -g @vigil_status "$status"
 fi
