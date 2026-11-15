@@ -63,12 +63,24 @@ vigil_lock_file() {
 # intermediate directories (e.g. the shared "vigil" parent) would fall
 # back to the ambient umask, so a temporary umask override guarantees
 # every directory created by this call, not just the leaf, is 0700.
+#
+# Also performs a best-effort sweep of orphaned *.tmp.* files left behind
+# by a writer killed (or crashed) between _vigil_write_queue_atomic's
+# temp-file write and its atomic `mv` (WR-02). This runs on every
+# invocation, so a long-running production environment self-heals instead
+# of accumulating clutter indefinitely. A plain `trap ... EXIT` would not
+# cover this: the holder may be killed with SIGKILL (exactly what
+# test/fault/crash_safety.bats exercises), which no process can trap. The
+# `-mmin +1` threshold (older than 1 minute) avoids racing a write that is
+# still legitimately in flight.
 vigil_ensure_runtime_dir() {
 	local old_umask
 	old_umask="$(umask)"
 	umask 077
 	mkdir -p "$(vigil_runtime_dir)"
 	umask "$old_umask"
+
+	find "$(vigil_runtime_dir)" -maxdepth 1 -name 'queue.json.tmp.*' -mmin +1 -delete 2>/dev/null || true
 }
 
 # vigil_now_iso — echoes the current UTC time in ISO-8601 format.
