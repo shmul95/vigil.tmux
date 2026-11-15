@@ -224,11 +224,20 @@ vigil_release_lock() {
 # through this helper so neither can read-modify-write @vigil_* state
 # concurrently (T-03-03).
 #
+# Not re-entrant across calls in the same process: `exec {FD}>` allocates
+# a NEW descriptor and overwrites VIGIL_LOCK_FD each time, so without
+# releasing first, a second in-process call would leak the first FD (and
+# its lock), then deadlock against its own still-held lock until the 2s
+# timeout exits the whole process (WR-01). Release any previously held
+# lock before reacquiring so composing two locked operations in one
+# process degrades to "the second call re-locks" rather than a crash.
+#
 # Do not call this from vigil.tmux: it may exit on lock timeout.
 vigil_with_lock() {
 	local lock_file
 	lock_file="$(vigil_lock_file)"
 	vigil_ensure_runtime_dir
+	vigil_release_lock
 	exec {VIGIL_LOCK_FD}>"$lock_file"
 	if ! flock -w 2 "$VIGIL_LOCK_FD"; then
 		echo "${0##*/}: lock acquisition timed out after 2s" >&2

@@ -106,6 +106,23 @@ teardown() {
 	[ "$output" = "ran" ]
 }
 
+@test "WR-01: a second in-process vigil_with_lock call releases the first lock instead of deadlocking" {
+	# Without releasing the first lock, this second call would deadlock
+	# against the still-held first lock and `exit 2` the whole process
+	# after the 2s timeout. Run in a fresh bash -c subprocess (rather than
+	# inline in this test's own process) so VIGIL_LOCK_FD leaking across
+	# bats' own test machinery is never a confound.
+	run timeout 1 bash -c '
+		source "'"$BATS_TEST_DIRNAME"'/../../scripts/lib/vigil-common.sh"
+		mark_first() { echo first; }
+		mark_second() { echo second; }
+		vigil_with_lock mark_first
+		vigil_with_lock mark_second
+	'
+	[ "$status" -eq 0 ]
+	[ "$output" = "$(printf 'first\nsecond')" ]
+}
+
 @test "a second process attempting the same lock times out with exit 2" {
 	source "$BATS_TEST_DIRNAME/../../scripts/lib/vigil-common.sh"
 	vigil_ensure_runtime_dir
