@@ -292,6 +292,20 @@ vigil_in_tmux() {
 # absent, unreadable, or not {"queue":[...]}.
 vigil_read_queue_count() {
 	local queue_file count
+	# CR-03: close this process's copy of the lock FD UNCONDITIONALLY,
+	# before doing anything else. Every call site -- the
+	# count="$(vigil_read_queue_count)" inside vigil_publish_state (the
+	# highest-frequency instance: reached on every queue mutation via
+	# _vigil_mutation and every vigil-publish invocation, while the lock
+	# is still held) and the equivalent call in vigil.tmux (lock-free,
+	# where VIGIL_LOCK_FD is unset and this is a no-op) -- already
+	# invokes this function from inside a "$(...)" command substitution
+	# subshell, so this only ever closes that subshell's own copy,
+	# never the real holder's. Closing it FIRST (before vigil_queue_file
+	# resolves the runtime dir, which may itself fork a sha1sum/shasum/
+	# openssl child via _vigil_sha1_16 when $TMUX is set, and before the
+	# jq call below) covers every child this function spawns.
+	_vigil_close_lock_fd
 	queue_file="$(vigil_queue_file)"
 	if [[ ! -s "$queue_file" ]]; then
 		printf '0'
