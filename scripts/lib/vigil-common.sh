@@ -387,10 +387,17 @@ vigil_publish_state() {
 	fi
 	count="$(vigil_read_queue_count)"
 	status="$(vigil_render_status "$count" "$auto")"
+	# IN-01: redirect stdout too, not just stderr. In current tmux
+	# set-option prints nothing on stdout on success, so this is defense
+	# in depth -- but a future tmux version (or a user's tmux config/hook)
+	# that ever makes set-option/refresh-client emit stdout would
+	# otherwise silently concatenate onto cmd_rotate's single-line
+	# pane_id contract, the only mutation that returns meaningful stdout
+	# to its caller.
 	(
 		_vigil_close_lock_fd
 		tmux set-option -g @vigil_queue_count "$count" \; \
 			set-option -g @vigil_auto "$auto" \; \
 			set-option -g @vigil_status "$status"
-	) 2>/dev/null || true
+	) >/dev/null 2>&1 || true
 }
