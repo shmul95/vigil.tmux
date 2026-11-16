@@ -6,6 +6,28 @@
 # `set -e`/`set -u` at the top-level, since that would mutate the shell
 # options of whatever script sources it.
 
+# _vigil_sha1_16 — echoes the first 16 hex chars of the SHA-1 of stdin.
+#
+# WR-08: `sha1sum` is a GNU coreutils utility, not part of the base
+# macOS userland and not in this project's devShell buildInputs for the
+# darwin systems flake.nix declares support for. Prefer it when present
+# (keeps the exact same hash -- and therefore the exact same resolved
+# runtime dir -- on every system this has run on so far), falling back
+# to macOS's own `shasum` and then to `openssl dgst`, both of which
+# produce the identical SHA-1 digest.
+_vigil_sha1_16() {
+	if command -v sha1sum >/dev/null 2>&1; then
+		sha1sum | cut -c1-16
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 1 | cut -c1-16
+	else
+		# openssl's stdin output format varies by version ("SHA1(stdin)=
+		# <hash>" vs. a bare "<hash>"); the hash is always the LAST
+		# whitespace-separated field either way.
+		openssl dgst -sha1 | awk '{print $NF}' | cut -c1-16
+	fi
+}
+
 # vigil_runtime_dir — echoes the resolved runtime dir for this tmux server.
 #
 # Honors $VIGIL_RUNTIME_DIR as a test seam first (bats isolates every test
@@ -31,7 +53,7 @@ vigil_runtime_dir() {
 		# and `-S /project-b/default` both have a trailing "default"
 		# filename component, so basename() alone would collapse them
 		# onto the same vigil runtime dir and silently merge their queues.
-		socket_name="$(printf '%s' "$socket_path" | sha1sum | cut -c1-16)"
+		socket_name="$(printf '%s' "$socket_path" | _vigil_sha1_16)"
 	else
 		socket_name="default"
 	fi
