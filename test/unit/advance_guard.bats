@@ -13,3 +13,9 @@ load '../test_helper'
 	[ "$status" -eq 0 ]
 	[ ! -e "${VIGIL_RUNTIME_DIR}/queue.json" ]
 }
+
+@test "vigil-prune is a silent no-op outside tmux" {
+	run env -u TMUX bash "$BATS_TEST_DIRNAME/../../scripts/vigil-prune"
+	[ "$status" -eq 0 ]
+	[ ! -e "${VIGIL_RUNTIME_DIR}/queue.json" ]
+}

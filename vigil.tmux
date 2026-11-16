@@ -14,6 +14,24 @@ if ! command -v tmux >/dev/null 2>&1 || [[ -z "${TMUX:-}" ]]; then
 	exit 0
 fi
 
+# NAV-01/NAV-02/NAV-03: Alt+v jump-or-rotate, no prefix key needed
+# (05-CONTEXT.md: "Key binding: bind-key -n M-v"). bind-key is
+# naturally idempotent -- re-binding the same key on every plugin
+# (re)load simply overwrites to the identical command, unlike
+# status-right's append-once logic below, so no extra guard is
+# needed here.
+tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
+
+# QUEUE-03 fast path: prune immediately whenever any pane's own
+# process exits normally. Does NOT fire for
+# kill-pane/kill-session/kill-server (PITFALLS.md Pitfall 6) --
+# vigil-advance's own lazy prune-on-read is the backstop for those
+# (05-CONTEXT.md's two-layer design). set-hook without -a replaces
+# the single action already registered for this hook name rather
+# than appending another copy, so this is also safe to call on
+# every plugin (re)load.
+tmux set-hook -g pane-exited "run-shell -b '$CURRENT_DIR/scripts/vigil-prune'"
+
 # Sanitize @vigil_auto to exactly "on"/"off" and rewrite the option only
 # when the sanitized value actually differs from what was read (covers
 # both "unset" and an invalid pre-existing value, e.g. a bogus manual
