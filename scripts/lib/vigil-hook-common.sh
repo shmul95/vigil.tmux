@@ -34,6 +34,13 @@ vigil_hook_read_stdin() {
 # Claude Code's actively-evolving hook schema (STACK.md already caught
 # one field-name correction: `prompt` not `prompt_text`) without
 # crashing before the hook script's own fail-open trap even matters.
+# Only missing-field/null/malformed-JSON default: a present-and-false
+# (or present-and-0, present-and-"") field value is returned as-is,
+# never coerced to <default> — deliberately NOT `.${field} // $d`,
+# since jq's `//` alternative operator treats both `null` and `false`
+# as falsy and would silently replace a legitimate `false` with
+# <default>. `has()` plus an explicit `!= null` check distinguishes
+# "field present and false" from "field missing/null".
 # <field> is always a fixed literal supplied by our own call sites
 # (e.g. "notification_type"), never attacker/payload-controlled, so
 # interpolating it into the jq program text is safe; <default> is
@@ -42,7 +49,7 @@ vigil_hook_read_stdin() {
 vigil_hook_jq_field() {
 	local json="$1" field="$2" default="${3:-}"
 	local value
-	if ! value="$(jq -r --arg d "$default" ".${field} // \$d" <<<"$json" 2>/dev/null)"; then
+	if ! value="$(jq -r --arg d "$default" "if has(\"${field}\") and .${field} != null then .${field} else \$d end" <<<"$json" 2>/dev/null)"; then
 		value="$default"
 	fi
 	printf '%s' "$value"
