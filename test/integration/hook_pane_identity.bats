@@ -49,3 +49,16 @@ teardown() {
     [ "$status" -eq 0 ]
     [ "$(vigil-queue peek | jq -r '.pane_id')" = "$PANE_A" ]
 }
+
+@test "DETECT-05: all three hooks exit 0 inside a real tmux session even with a corrupted queue file" {
+    echo 'not valid json' > "$VIGIL_RUNTIME_DIR/queue.json"
+
+    TMUX_PANE="$PANE_A" run timeout 5 bash -c "vigil-hook-stop < \"$BATS_TEST_DIRNAME/../fixtures/hooks/stop.json\""
+    [ "$status" -eq 0 ]
+
+    TMUX_PANE="$PANE_A" run timeout 5 bash -c "vigil-hook-notification < \"$BATS_TEST_DIRNAME/../fixtures/hooks/notification_idle_prompt.json\""
+    [ "$status" -eq 0 ]
+
+    TMUX_PANE="$PANE_A" run timeout 5 bash -c "vigil-hook-userpromptsubmit < \"$BATS_TEST_DIRNAME/../fixtures/hooks/userpromptsubmit.json\""
+    [ "$status" -eq 0 ]
+}
