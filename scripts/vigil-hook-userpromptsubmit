@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# vigil-hook-userpromptsubmit — Claude Code UserPromptSubmit hook client.
+# Dequeues the pane that fired this hook (DETECT-03/NAV-04: submitting a
+# prompt removes the pane from the queue). Pane identity comes ONLY from
+# $TMUX_PANE, captured at invocation time -- never from a tmux query --
+# per CONTEXT.md's Pane Identity decision (Pitfall 9).
+set -euo pipefail
+
+# DETECT-05: fail-open across every failure mode we can control. The
+# EXIT trap unconditionally converts internal failures -- a `set -e`
+# abort, an explicit `exit N`, a failing vigil-queue call -- to exit 0;
+# bash always runs the EXIT trap before the process actually exits, so
+# this does not depend on every call site below remembering its own
+# `|| true`. That guarantee alone does NOT cover termination by an
+# external signal: bash runs the EXIT trap on signal death too, but
+# then re-raises the signal itself unless a handler is registered on
+# it directly, which would otherwise surface to Claude Code as exit
+# 143 (TERM), 130 (INT), or 129 (HUP) instead of 0. The explicit
+# TERM/INT/HUP traps below close that gap. SIGKILL cannot be trapped
+# by any process (kernel-enforced) and is out of scope -- the outer
+# bound there is Claude Code's own hook `timeout` field in
+# settings.json (04-CONTEXT.md), not anything this script can control.
+trap 'exit 0' EXIT
+trap 'exit 0' TERM INT HUP
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-hook-common.sh"
+
+json="$(vigil_hook_read_stdin)"
+vigil_hook_debug "UserPromptSubmit fired (hook_event_name=$(vigil_hook_jq_field "$json" hook_event_name unknown))"
+
+pane_id="$(vigil_hook_pane_id)" || {
+	vigil_hook_debug "TMUX_PANE unset, no-op"
+	exit 0
+}
+
+# Absolute self-located path, not a bare PATH lookup: Claude Code hook
+# commands run with the session's own cwd, which has no reliable
+# relationship to this repo's scripts/ directory or to $PATH.
+"$CURRENT_DIR/vigil-queue" dequeue "$pane_id" || vigil_hook_debug "dequeue failed (ignored, fail-open)"
