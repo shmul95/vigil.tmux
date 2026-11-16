@@ -20,6 +20,20 @@ fi
 # (re)load simply overwrites to the identical command, unlike
 # status-right's append-once logic below, so no extra guard is
 # needed here.
+#
+# 05-REVIEW.md WR-05: warn (to stderr) whenever M-v was already bound
+# to something before this line overwrites it, so a pre-existing
+# tmux.conf binding -- or losing a program's own M-v keystroke
+# server-wide (e.g. Emacs's default "scroll up a page") -- is at
+# least observable instead of silently shadowed. This can only warn,
+# not fully distinguish the two cases: idempotent reload means
+# Vigil's own prior registration from an earlier plugin load looks,
+# from this check's perspective, identical to a user's pre-existing
+# binding. Documented as a known, accepted tradeoff rather than
+# overengineered further.
+if tmux list-keys -T root 2>/dev/null | grep -q -- ' M-v '; then
+	echo "vigil: overwriting an existing M-v binding" >&2
+fi
 tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
 
 # QUEUE-03 fast path: prune immediately whenever any pane's own
@@ -30,7 +44,17 @@ tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
 # the single action already registered for this hook name rather
 # than appending another copy, so this is also safe to call on
 # every plugin (re)load.
-tmux set-hook -g pane-exited "run-shell -b '$CURRENT_DIR/scripts/vigil-prune'"
+#
+# 05-REVIEW.md WR-06: set-hook's action must be a single string
+# argument (unlike bind-key's native argv -- empirically confirmed:
+# passing the action as separate argv words makes tmux reject the
+# call with "too many arguments"), so $CURRENT_DIR has to be
+# interpolated inside an embedded '...' span either way. Escape any
+# single quote in $CURRENT_DIR (' -> '\'') before interpolating, so
+# an install path that happens to contain a literal single quote
+# cannot break out of that span early.
+vigil_prune_path_escaped="${CURRENT_DIR//\'/\'\\\'\'}"
+tmux set-hook -g pane-exited "run-shell -b '${vigil_prune_path_escaped}/scripts/vigil-prune'"
 
 # Sanitize @vigil_auto to exactly "on"/"off" and rewrite the option only
 # when the sanitized value actually differs from what was read (covers
