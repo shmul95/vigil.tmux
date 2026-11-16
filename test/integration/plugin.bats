@@ -214,3 +214,15 @@ STUB
 	[ "$status" -eq 0 ]
 	[ "$(tmux show-options -gv status-right)" = 'USERSEG #{@vigil_status}' ]
 }
+
+@test "NAV: binds Alt+v (no prefix) to run-shell vigil-advance" {
+	run tmux list-keys -T root
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"M-v"*"run-shell"*"vigil-advance"* ]]
+}
+
+@test "QUEUE-03: registers a pane-exited hook calling vigil-prune" {
+	run tmux show-hooks -g pane-exited
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"run-shell"*"vigil-prune"* ]]
+}

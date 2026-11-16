@@ -40,6 +40,7 @@ vigil_test_server_start() {
 }
 
 vigil_test_server_stop() {
+	vigil_test_detach_client
 	if [[ -n "${VIGIL_TEST_SOCKET:-}" ]]; then
 		TMUX_TMPDIR="${VIGIL_TEST_TMUX_TMPDIR:-/tmp}" tmux -L "$VIGIL_TEST_SOCKET" kill-server 2>/dev/null || true
 	fi
@@ -51,4 +52,54 @@ vigil_test_server_stop() {
 
 vigil_load_plugin() {
 	bash "$BATS_TEST_DIRNAME/../../vigil.tmux"
+}
+
+# vigil_test_attach_client — spawns a genuine, non-interactive
+# control-mode tmux client attached to "main" on the private test
+# server, backed by a FIFO so the client process has a readable,
+# never-closed stdin (a plain `-C attach-session` with a closed or
+# non-piped stdin exits immediately; control mode needs an open,
+# continuously-live input stream to stay attached). Required for
+# any assertion that depends on `switch-client` actually doing
+# something: empirically, `tmux switch-client -t <pane>` against a
+# server with ZERO attached clients fails outright ("no current
+# client") -- there is nothing for it to switch. Multi-attached-
+# client support is out of scope for v1 (REQUIREMENTS.md), so
+# exactly one control-mode client is sufficient for every test that
+# needs real navigation to be observable.
+vigil_test_attach_client() {
+	VIGIL_TEST_CLIENT_FIFO="$(mktemp -u)"
+	mkfifo "$VIGIL_TEST_CLIENT_FIFO"
+	(
+		exec 9<>"$VIGIL_TEST_CLIENT_FIFO"
+		TMUX_TMPDIR="$VIGIL_TEST_TMUX_TMPDIR" tmux -L "$VIGIL_TEST_SOCKET" -C attach-session -t main <&9 >/dev/null 2>&1 &
+		echo $! >"${VIGIL_TEST_CLIENT_FIFO}.pid"
+	)
+	# Poll (up to 1s) for the client to actually register with the
+	# server before returning control to the caller -- the
+	# background subshell above returns almost immediately, well
+	# before tmux has necessarily finished the attach handshake.
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		if [[ -n "$(TMUX_TMPDIR="$VIGIL_TEST_TMUX_TMPDIR" tmux -L "$VIGIL_TEST_SOCKET" list-clients 2>/dev/null)" ]]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	echo "vigil_test_attach_client: client never registered" >&2
+	return 1
+}
+
+# vigil_test_detach_client — kills the control-mode client spawned
+# by vigil_test_attach_client (if any) and removes its FIFO. Safe
+# to call even when no client was ever attached.
+vigil_test_detach_client() {
+	if [[ -n "${VIGIL_TEST_CLIENT_FIFO:-}" ]]; then
+		if [[ -f "${VIGIL_TEST_CLIENT_FIFO}.pid" ]]; then
+			kill "$(cat "${VIGIL_TEST_CLIENT_FIFO}.pid")" 2>/dev/null || true
+			rm -f "${VIGIL_TEST_CLIENT_FIFO}.pid"
+		fi
+		rm -f "$VIGIL_TEST_CLIENT_FIFO"
+	fi
+	unset VIGIL_TEST_CLIENT_FIFO
 }
