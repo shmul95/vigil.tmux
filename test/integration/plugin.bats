@@ -147,6 +147,32 @@ teardown() {
 	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
 }
 
+@test "WR-06/WR-03: a repaired @vigil_queue_count also re-renders a stale @vigil_status" {
+	# Regression test for commit 75e598b: a non-numeric @vigil_queue_count
+	# is repaired from the persisted queue (WR-06), but without WR-03 the
+	# rendered @vigil_status string would be left stale -- disagreeing with
+	# the just-repaired count -- until the next real mutation republishes
+	# all three options together.
+	vigil-queue enqueue '%1'
+	tmux set-option -g @vigil_queue_count 'garbage'
+	tmux set-option -g @vigil_status 'stale-marker'
+	vigil_load_plugin
+	[ "$(tmux show-options -gv @vigil_queue_count)" = '1' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '1 Vigil #[fg=red]●#[default]' ]
+}
+
+@test "WR-06/WR-03: a sanitized @vigil_auto also re-renders a stale @vigil_status" {
+	# Same regression as above, but for the @vigil_auto repair path: a
+	# bogus @vigil_auto is sanitized to off (WR-06), and the stale
+	# @vigil_status left over from a previous on-mode render must be
+	# re-rendered to match the just-sanitized auto value, not left stale.
+	tmux set-option -g @vigil_auto 'garbage'
+	tmux set-option -g @vigil_status '#[fg=white]0 Vigil #[fg=green]●#[default]'
+	vigil_load_plugin
+	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '0 Vigil #[fg=red]●#[default]' ]
+}
+
 @test "WR-03: a failed status-right read leaves status-right untouched and exits 0" {
 	# Simulate show-options failing for status-right specifically (a tmux
 	# shim missing the command, a transient server failure, ...) by
