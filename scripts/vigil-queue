@@ -44,7 +44,20 @@ _vigil_mutation() {
 _vigil_write_queue_atomic() {
 	local content="$1"
 	local queue_file tmp_file
-	queue_file="$(vigil_queue_file)"
+	# This function runs directly in the real lock holder (it is invoked
+	# without a "$(...)" or "( ... )" wrapper from _cmd_enqueue_locked/
+	# _cmd_dequeue_locked/_cmd_rotate_locked/_cmd_prune_locked), so
+	# _vigil_close_lock_fd must never be called bare at this level --
+	# that would close the HOLDER's own copy of the lock FD and release
+	# the flock early. Every child-spawning step below, including
+	# resolving queue_file itself (vigil_queue_file -> vigil_runtime_dir
+	# may fork a sha1sum/shasum/openssl child via _vigil_sha1_16 when
+	# $TMUX is set), is individually wrapped in its own subshell that
+	# closes only that subshell's own inherited copy.
+	queue_file="$(
+		_vigil_close_lock_fd
+		vigil_queue_file
+	)"
 	tmp_file="${queue_file}.tmp.$$"
 	printf '%s' "$content" >"$tmp_file"
 	# WR-07: the temp file (and, via `mv` preserving permissions on a
@@ -53,7 +66,17 @@ _vigil_write_queue_atomic() {
 	# protected by the 0700 leaf directory in the common case, but
 	# chmod explicitly too so the file's own permissions don't depend
 	# on umask at all.
-	chmod 600 "$tmp_file" 2>/dev/null || true
+	#
+	# CR-01: chmod runs in a subshell that closes this process's copy of
+	# the lock FD first -- same reasoning as the fault-injection sleep
+	# and mv below. Without this, a SIGKILL to the holder while chmod is
+	# still running leaves an orphaned `chmod` holding a copy of the
+	# lock's file description, and flock keeps the lock held until that
+	# orphan also exits -- dropping the next mutation with exit 2.
+	(
+		_vigil_close_lock_fd
+		chmod 600 "$tmp_file"
+	) 2>/dev/null || true
 	if [[ -n "${VIGIL_QUEUE_TEST_DELAY:-}" ]]; then
 		# CR-01: run the fault-injection sleep in a subshell that closes
 		# this process's copy of the lock FD first. Without this, a
