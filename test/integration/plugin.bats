@@ -254,13 +254,16 @@ STUB
 	# breaks the other). vigil.tmux now refuses to register the fast
 	# path at all for such a path, rather than risk a silent repeat.
 	#
-	# This test only exercises the warning half of the guard (the
-	# show-hooks non-registration assertion was dropped: it proved
-	# flaky in this harness -- show-hooks observed a hook from
-	# outside this test's isolated server in at least one run, a
-	# test-isolation bug still being tracked, not a bug in the guard
-	# itself, which was verified correct via direct manual tmux
-	# testing. Follow-up: 05-REVIEW-FIX.md).
+	# 05-REVIEW.md WR-01 (iteration 3): the show-hooks non-registration
+	# assertion was previously dropped as a suspected harness flake --
+	# it was not flaky, it was a deterministic setup-order bug. This
+	# file's shared setup() already loads the REAL (non-quote)
+	# vigil.tmux on this test's own isolated server before the test
+	# body runs, registering the genuine pane-exited hook. Clear that
+	# pre-existing hook first so this assertion exercises only the
+	# quote-path load's own behavior, not setup()'s.
+	tmux set-hook -gu pane-exited
+
 	QUOTE_DIR="$(mktemp -d)/vigil'quote"
 	mkdir -p "$QUOTE_DIR/scripts/lib"
 	cp "$BATS_TEST_DIRNAME/../../vigil.tmux" "$QUOTE_DIR/vigil.tmux"
@@ -271,6 +274,9 @@ STUB
 	run bash "$QUOTE_DIR/vigil.tmux"
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"single quote"* ]]
+
+	run tmux show-hooks -g pane-exited
+	[ "$output" = "pane-exited" ]
 
 	rm -rf "$(dirname "$QUOTE_DIR")"
 }

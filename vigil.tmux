@@ -58,6 +58,15 @@ tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
 # contains a literal single quote -- vigil-advance's lazy
 # prune-on-read backstop still fully covers QUEUE-03 in that case,
 # just without the fast path's immediate reaction.
+#
+# IN-01: this guard checks only for a literal single quote, the one
+# metacharacter actually exercised by this code's two-layer
+# re-parse. A literal newline in the install path (permitted on
+# Linux filesystems) carries the same category of risk and is not
+# checked -- accepted as out of scope: an install path containing a
+# raw newline byte is a vanishingly unlikely, self-inflicted
+# scenario for a personal tmux plugin, not worth a broader
+# metacharacter-sweeping guard.
 if [[ "$CURRENT_DIR" == *"'"* ]]; then
 	echo "vigil: install path contains a single quote; skipping the pane-exited fast-path hook (QUEUE-03's backstop still applies)" >&2
 else
