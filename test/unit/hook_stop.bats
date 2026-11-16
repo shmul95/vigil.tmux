@@ -38,6 +38,22 @@ load '../test_helper'
 	[ "$status" -eq 0 ]
 }
 
+@test "DETECT-05: exits 0 even when the queue lock cannot be acquired" {
+	mkdir -p "$VIGIL_RUNTIME_DIR"
+	exec {lock_fd}>"$VIGIL_RUNTIME_DIR/queue.lock"
+	flock "$lock_fd"
+	(
+		sleep 3
+		flock -u "$lock_fd" 2>/dev/null
+	) &
+	local holder=$!
+
+	TMUX_PANE='%7' run timeout 5 vigil-hook-stop <"$BATS_TEST_DIRNAME/../fixtures/hooks/stop.json"
+	[ "$status" -eq 0 ]
+
+	wait "$holder" 2>/dev/null || true
+}
+
 @test "DETECT-05: exits 0 when killed by SIGTERM while blocked reading stdin" {
 	# Deviation from the plan's literal example (Rule 1 - bug): opening
 	# the fifo write-only (`>`) with no reader yet blocks forever (POSIX

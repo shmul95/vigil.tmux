@@ -58,6 +58,22 @@ load '../test_helper'
 	[ "$status" -eq 0 ]
 }
 
+@test "DETECT-05: exits 0 even when the queue lock cannot be acquired" {
+	mkdir -p "$VIGIL_RUNTIME_DIR"
+	exec {lock_fd}>"$VIGIL_RUNTIME_DIR/queue.lock"
+	flock "$lock_fd"
+	(
+		sleep 3
+		flock -u "$lock_fd" 2>/dev/null
+	) &
+	local holder=$!
+
+	TMUX_PANE='%7' run timeout 5 vigil-hook-notification <"$BATS_TEST_DIRNAME/../fixtures/hooks/notification_idle_prompt.json"
+	[ "$status" -eq 0 ]
+
+	wait "$holder" 2>/dev/null || true
+}
+
 @test "DETECT-05: exits 0 when killed by SIGTERM while blocked reading stdin" {
 	# See the matching comment in hook_stop.bats for why this signals the
 	# hook's whole process GROUP (via setsid) rather than its single pid:
