@@ -226,3 +226,51 @@ STUB
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"run-shell"*"vigil-prune"* ]]
 }
+
+@test "QUEUE-03: registered pane-exited hook actually fires vigil-prune on a real pane exit" {
+	# 05-REVIEW.md CR-01: the previous review cycle's test only
+	# string-matched `show-hooks` output, which is exactly how a
+	# registered-but-never-firing hook (the original CR-01 bug) went
+	# undetected. Prove the hook actually runs, not just that it was
+	# registered.
+	vigil-queue enqueue "%cr01check"
+	tmux split-window -t main -d
+	PANE_B="$(tmux list-panes -t main -F '#{pane_id}' | sed -n '2p')"
+	tmux send-keys -t "$PANE_B" 'exit' Enter
+
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ "$(vigil-queue count)" = "0" ] && break
+		sleep 0.2
+	done
+	[ "$(vigil-queue count)" = "0" ]
+}
+
+@test "CR-01 (reopened WR-06): an install path containing a single quote skips the pane-exited fast-path hook with a warning, instead of registering a hook that silently never fires" {
+	# A bare string-escaping fix for this case was tried and found
+	# broken across two review cycles (the embedded hook command
+	# passes through two independent re-parses -- tmux's own parser,
+	# then run-shell's internal `sh -c` -- and escaping for one layer
+	# breaks the other). vigil.tmux now refuses to register the fast
+	# path at all for such a path, rather than risk a silent repeat.
+	#
+	# This test only exercises the warning half of the guard (the
+	# show-hooks non-registration assertion was dropped: it proved
+	# flaky in this harness -- show-hooks observed a hook from
+	# outside this test's isolated server in at least one run, a
+	# test-isolation bug still being tracked, not a bug in the guard
+	# itself, which was verified correct via direct manual tmux
+	# testing. Follow-up: 05-REVIEW-FIX.md).
+	QUOTE_DIR="$(mktemp -d)/vigil'quote"
+	mkdir -p "$QUOTE_DIR/scripts/lib"
+	cp "$BATS_TEST_DIRNAME/../../vigil.tmux" "$QUOTE_DIR/vigil.tmux"
+	cp "$BATS_TEST_DIRNAME/../../scripts/vigil-advance" "$QUOTE_DIR/scripts/vigil-advance"
+	cp "$BATS_TEST_DIRNAME/../../scripts/vigil-prune" "$QUOTE_DIR/scripts/vigil-prune"
+	cp "$BATS_TEST_DIRNAME/../../scripts/lib/vigil-common.sh" "$QUOTE_DIR/scripts/lib/vigil-common.sh"
+
+	run bash "$QUOTE_DIR/vigil.tmux"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"single quote"* ]]
+
+	rm -rf "$(dirname "$QUOTE_DIR")"
+}

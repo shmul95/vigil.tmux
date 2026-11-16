@@ -69,3 +69,35 @@ STUB
 
 	rm -rf "$TMUX_STUB_DIR"
 }
+
+@test "CR-01 (WR-A): vigil-prune's identical list-panes-failure guard also never wipes a live queue" {
+	# scripts/vigil-prune received the identical CR-01 fix as
+	# vigil-advance in the same commit, but only vigil-advance's copy
+	# had a regression test. Same fault-injection, targeting
+	# vigil-prune directly (as the pane-exited hook action would).
+	TMUX_STUB_DIR="$(mktemp -d)"
+	mkdir -p "$TMUX_STUB_DIR/bin"
+	cat >"$TMUX_STUB_DIR/bin/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+list-panes)
+	echo "tmux: stubbed list-panes failure" >&2
+	exit 1
+	;;
+esac
+exit 0
+STUB
+	chmod +x "$TMUX_STUB_DIR/bin/tmux"
+
+	"$BATS_TEST_DIRNAME/../../scripts/vigil-queue" enqueue "%real-live-pane-2"
+	[ "$(vigil-queue count)" = "1" ]
+
+	PATH="$TMUX_STUB_DIR/bin:$PATH" TMUX="stub,0,0" \
+		run bash "$BATS_TEST_DIRNAME/../../scripts/vigil-prune"
+	[ "$status" -eq 0 ]
+
+	[ "$(vigil-queue count)" = "1" ]
+	[ "$(vigil-queue peek | jq -r '.pane_id')" = "%real-live-pane-2" ]
+
+	rm -rf "$TMUX_STUB_DIR"
+}

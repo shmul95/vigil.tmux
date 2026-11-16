@@ -45,16 +45,24 @@ tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
 # than appending another copy, so this is also safe to call on
 # every plugin (re)load.
 #
-# 05-REVIEW.md WR-06: set-hook's action must be a single string
-# argument (unlike bind-key's native argv -- empirically confirmed:
-# passing the action as separate argv words makes tmux reject the
-# call with "too many arguments"), so $CURRENT_DIR has to be
-# interpolated inside an embedded '...' span either way. Escape any
-# single quote in $CURRENT_DIR (' -> '\'') before interpolating, so
-# an install path that happens to contain a literal single quote
-# cannot break out of that span early.
-vigil_prune_path_escaped="${CURRENT_DIR//\'/\'\\\'\'}"
-tmux set-hook -g pane-exited "run-shell -b '${vigil_prune_path_escaped}/scripts/vigil-prune'"
+# 05-REVIEW.md CR-01 (reopened WR-06): the embedded '...' span below
+# passes through TWO independent re-parses -- tmux's own parser when
+# it resolves the stored hook action, then run-shell's internal
+# `sh -c` on the resulting argument -- and a single round of
+# '->'\'' escaping only protects the first. Verified empirically
+# (including against the 'fixed' double-escaping attempted in the
+# first review-fix pass, which was itself still broken) that no
+# single string transformation survives both layers correctly for
+# every path. Rather than risk a second silent escaping bug, refuse
+# to register the fast-path hook at all when the install path
+# contains a literal single quote -- vigil-advance's lazy
+# prune-on-read backstop still fully covers QUEUE-03 in that case,
+# just without the fast path's immediate reaction.
+if [[ "$CURRENT_DIR" == *"'"* ]]; then
+	echo "vigil: install path contains a single quote; skipping the pane-exited fast-path hook (QUEUE-03's backstop still applies)" >&2
+else
+	tmux set-hook -g pane-exited "run-shell -b '${CURRENT_DIR}/scripts/vigil-prune'"
+fi
 
 # Sanitize @vigil_auto to exactly "on"/"off" and rewrite the option only
 # when the sanitized value actually differs from what was read (covers
