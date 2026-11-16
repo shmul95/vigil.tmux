@@ -45,8 +45,21 @@ if [[ "$count" != "$raw_count" ]]; then
 	tmux set-option -g @vigil_queue_count "$count"
 fi
 
+# WR-03: re-render and rewrite @vigil_status whenever EITHER count or
+# auto was just repaired above (not only when @vigil_status itself is
+# empty). A genuine server restart clears all three @vigil_* options
+# together, which the empty-status check alone already covers, but a
+# user can independently clear/corrupt just @vigil_queue_count or
+# @vigil_auto (e.g. a manual `tmux set-option -gu @vigil_queue_count`)
+# while leaving @vigil_status untouched -- the WR-06 repair above fixes
+# count/auto in that case, but without this check the stale rendered
+# @vigil_status string would disagree with the just-repaired values
+# until the next real mutation republishes all three together.
+status_dirty=0
+[[ "$count" != "$raw_count" ]] && status_dirty=1
+[[ "$auto" != "$raw_auto" ]] && status_dirty=1
 status="$(tmux show-options -gv @vigil_status 2>/dev/null || true)"
-if [[ -z "$status" ]]; then
+if [[ -z "$status" || "$status_dirty" -eq 1 ]]; then
 	status="$(vigil_render_status "$count" "$auto")"
 	tmux set-option -g @vigil_status "$status"
 fi
