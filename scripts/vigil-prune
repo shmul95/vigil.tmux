@@ -32,6 +32,17 @@ if ! vigil_in_tmux; then
 	exit 0
 fi
 
-live_panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null || true)"
-# shellcheck disable=SC2086 # intentional word-splitting: one pane_id per arg
-"$CURRENT_DIR/vigil-queue" prune $live_panes >/dev/null 2>&1 || true
+# CR-01: only prune when list-panes itself actually succeeded -- a
+# transient list-panes failure (socket contention, server hiccup, ...)
+# must NOT be treated identically to "zero live panes exist", or this
+# would wipe every genuinely-live queue entry on every single
+# pane-exited event server-wide. On failure, skip pruning for this
+# invocation (safe no-op; vigil-advance's lazy prune-on-read backstop
+# still reconciles later) and surface the failure on stderr instead of
+# silently discarding it.
+if live_panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)"; then
+	# shellcheck disable=SC2086 # intentional word-splitting: one pane_id per arg
+	"$CURRENT_DIR/vigil-queue" prune $live_panes >/dev/null 2>&1 || true
+else
+	echo "vigil-prune: tmux list-panes failed, skipping prune" >&2
+fi

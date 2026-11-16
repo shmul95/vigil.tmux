@@ -52,8 +52,21 @@ vigil_advance_flash() {
 # vanishingly rare in practice. 64 is comfortably above any
 # realistic queue depth (Claude's Discretion, 05-CONTEXT.md);
 # exhausting it would mean something is non-convergent, which the
-# fail-safe flash below treats identically to an empty queue rather
-# than erroring or leaving focus undefined.
+# fail-safe flash below reports distinctly from a genuinely empty
+# queue (WR-03) rather than erroring or leaving focus undefined.
+#
+# WR-04 (accepted tradeoff): each iteration can invoke up to two
+# lock-guarded vigil-queue subcommands (prune, and conditionally
+# rotate), each independently subject to vigil_with_lock's hardcoded
+# 2s `flock -w 2` timeout (vigil-common.sh). Under sustained lock
+# contention, the full retry loop can therefore legitimately take up
+# to roughly `64 x (2s + 2s) ~ 4+ minutes` before falling through to
+# the fail-safe flash -- a multi-minute stall is effectively a hang
+# from the user's perspective even though it is technically bounded.
+# This is accepted given Phase 2's existing 2s lock-timeout design:
+# tightening it would mean lowering a timeout shared by every
+# vigil-queue caller, not something to special-case just for this
+# interactive path.
 MAX_ATTEMPTS=64
 attempt=0
 while ((attempt < MAX_ATTEMPTS)); do
@@ -62,14 +75,31 @@ while ((attempt < MAX_ATTEMPTS)); do
 	# Lazy prune-on-read backstop (QUEUE-03): reconcile against every
 	# pane on this server, all sessions, not just the current one
 	# (05-CONTEXT.md's "Live-pane-list source" decision; matches
-	# vigil-queue's own tmux-independent design). Tolerate a failure
-	# here rather than aborting -- switch-client's own exit status
-	# below is the real safety net if this prune doesn't fully land.
-	live_panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null || true)"
-	# shellcheck disable=SC2086 # intentional word-splitting: one pane_id per arg
-	"$VIGIL_QUEUE" prune $live_panes >/dev/null 2>&1 || true
+	# vigil-queue's own tmux-independent design). CR-01: only prune
+	# when list-panes itself actually succeeded -- a transient
+	# list-panes failure (socket contention, server hiccup, ...) must
+	# NOT be treated identically to "the server genuinely has zero
+	# panes", or prune would wipe every genuinely-live entry in the
+	# queue. On failure, skip pruning for this attempt (a safe no-op;
+	# switch-client's own exit status below remains the real safety
+	# net for a dead target) and surface the failure on stderr instead
+	# of silently discarding it.
+	if live_panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)"; then
+		# shellcheck disable=SC2086 # intentional word-splitting: one pane_id per arg
+		"$VIGIL_QUEUE" prune $live_panes >/dev/null 2>&1 || true
+	else
+		echo "vigil-advance: tmux list-panes failed, skipping prune for this attempt" >&2
+	fi
 
-	head_json="$("$VIGIL_QUEUE" peek)" || head_json=""
+	# WR-01: distinguish a genuinely empty queue from a `peek` failure
+	# (e.g. a corrupted queue.json tripping _vigil_read_queue's shape
+	# validation) -- both must still fail open (no crash, no hang), but
+	# reporting them identically as "nothing waiting" would permanently
+	# mask real corruption from ever showing up in a user report.
+	if ! head_json="$("$VIGIL_QUEUE" peek)"; then
+		echo "vigil-advance: queue peek failed (possibly corrupted queue.json)" >&2
+		vigil_advance_flash "Vigil: queue error"
+	fi
 	head_pane="$(jq -r '.pane_id // empty' <<<"${head_json:-null}" 2>/dev/null || true)"
 
 	if [[ -z "$head_pane" ]]; then
@@ -85,6 +115,23 @@ while ((attempt < MAX_ATTEMPTS)); do
 		# on its own stdout (Phase 2), so there is no separate peek
 		# call and no race window between rotating and reading the
 		# new head (05-CONTEXT.md's Rotate-and-Jump Semantics).
+		#
+		# WR-02 (accepted, bounded risk): `rotate` re-reads the queue
+		# fresh under its own lock rather than asserting the head is
+		# still `$head_pane` -- there is a narrow TOCTOU window
+		# between the lock-free `peek` above (lock-free by design,
+		# Phase 2) and rotate's lock acquisition where a concurrent
+		# dequeue could change the head. If that race lands, rotate
+		# mutates whatever IS the head at that moment rather than the
+		# pane this iteration actually confirmed the user was on.
+		# This does not violate the "never lands on/errors on a dead
+		# pane" guarantee -- switch-client's own exit status below
+		# still protects that -- it only means a different-but-still-
+		# queued pane could get rotated to the back than the one
+		# verified here. The window is narrow and the outcome stays
+		# correct (a live, queued pane), so this is judged tolerable
+		# rather than worth a compare-and-swap `--if-head` parameter
+		# on `vigil-queue rotate`.
 		target="$("$VIGIL_QUEUE" rotate)" || continue
 	else
 		# NAV-01: not on the head -- read-only jump, no queue
@@ -109,6 +156,11 @@ done
 
 # Unreachable in any normal run (every iteration either exits or
 # removes the one dead target it just found) -- but if it is ever
-# reached, fail exactly like the empty-queue case rather than
-# erroring or leaving focus in an undefined state.
-vigil_advance_flash "Vigil: nothing waiting"
+# reached, the queue is NOT converging (a pathological case, e.g. a
+# queue entry being repeatedly re-raced/killed faster than this loop
+# can prune it). WR-03: flash a message distinct from the normal
+# empty-queue case (rather than "Vigil: nothing waiting") so this
+# anomaly stays observable instead of looking identical to the
+# common, benign empty-queue outcome.
+echo "vigil-advance: retries exhausted ($MAX_ATTEMPTS attempts) without converging" >&2
+vigil_advance_flash "Vigil: queue busy, try again"
