@@ -94,6 +94,14 @@ fi
 # satisfy the unescaped pattern below. $current itself is left
 # untouched so the append below still reproduces the user's literal text
 # exactly.
+#
+# IN-01: 0x01 is assumed never to occur literally in the user's
+# status-right. tmux options are arbitrary byte strings, so a status
+# line that legitimately contains a raw 0x01 byte could in theory
+# collide with a sentinel inserted elsewhere in the same string and
+# produce a false match -- vanishingly unlikely for a terminal status
+# line, and not worth a structural fix (e.g. a longer/rarer
+# private-use-area sentinel) given the likelihood.
 haystack="${current//'##'/$'\x01'}"
 case "$haystack" in
 *'#{@vigil_status}'*) ;;
