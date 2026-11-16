@@ -101,12 +101,34 @@ esac
 # fills) that budget -- so the marker can be wired correctly above and
 # still never render. Verify the marker actually survives that
 # truncation and, if not, widen the limit just enough to fit it.
-# "Vigil" is the one literal substring vigil_render_status() always
-# emits (in both auto states), so it is a stable rendering witness
-# independent of the live count.
-rendered="$(tmux display-message -p '#{T;=/#{status-right-length}:status-right}' 2>/dev/null || true)"
-if [[ "$rendered" != *'Vigil'* ]]; then
-	right_len="$(tmux show-options -gv status-right-length 2>/dev/null || true)"
-	[[ "$right_len" =~ ^[0-9]+$ ]] || right_len=40
-	tmux set-option -g status-right-length "$((right_len + 24))"
+#
+# WR-01: a substring search for the literal text "Vigil" in the
+# truncated render is ambiguous -- it can false-negative if the user's
+# OWN (untruncated) segment happens to contain that word somewhere
+# before the real marker, making this check conclude the marker
+# rendered fine when it was actually the cut-off text. Measure instead:
+# render status-right with a deliberately huge truncation bound (9999,
+# far beyond any realistic terminal width) to get its TRUE, fully
+# expanded length with no truncation applied, and compare that length
+# directly against the configured status-right-length. Because the
+# Vigil marker is always appended LAST (D-02) and tmux's #{T;=/N:...}
+# truncation always keeps the LEFTMOST N columns (cutting from the
+# right), the marker is guaranteed to render in full whenever the full
+# expansion's length fits within status-right-length -- no substring
+# matching required, so no coincidental-substring false negative is
+# possible.
+#
+# WR-02: vigil.tmux is a TPM entrypoint that runs exactly once per
+# server start / plugin (re)install -- nothing re-invokes it
+# automatically. A fixed "+24" increment only converges if the user
+# happens to reload the plugin enough additional times to accumulate
+# enough budget, which nothing prompts them to do. Set
+# status-right-length to the EXACT length required in one shot instead
+# of an arbitrary increment, so this always converges in the single
+# pass vigil.tmux actually gets.
+full_rendered="$(tmux display-message -p '#{T;=/9999:status-right}' 2>/dev/null || true)"
+right_len="$(tmux show-options -gv status-right-length 2>/dev/null || true)"
+[[ "$right_len" =~ ^[0-9]+$ ]] || right_len=40
+if ((${#full_rendered} > right_len)); then
+	tmux set-option -g status-right-length "${#full_rendered}"
 fi
