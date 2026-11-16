@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# vigil-hook-notification — Claude Code Notification hook client.
+# Enqueues the pane ONLY for an explicit allow-list of notification_type
+# values that genuinely need the user (DETECT-02) -- NOT "any
+# Notification enqueues". Unknown/future subtypes default-deny
+# (CONTEXT.md decision), which also covers the missing-field case since
+# vigil_hook_jq_field's default ("unknown") is never itself in the
+# allow-list.
+set -euo pipefail
+
+# DETECT-05: fail-open across every failure mode we can control. The
+# EXIT trap unconditionally converts internal failures (a `set -e`
+# abort, an explicit `exit N`, a failing vigil-queue call) to exit 0.
+# That alone does not cover termination by an external signal: bash
+# runs the EXIT trap on signal death too, but then re-raises the
+# signal itself unless a handler is registered on it directly, which
+# would otherwise surface to Claude Code as exit 143/130/129 (TERM/
+# INT/HUP) instead of 0. The explicit traps below close that gap.
+# SIGKILL cannot be trapped by any process and is out of scope -- the
+# outer bound there is Claude Code's own hook `timeout` field in
+# settings.json (04-CONTEXT.md), not this script.
+trap 'exit 0' EXIT
+trap 'exit 0' TERM INT HUP
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-hook-common.sh"
+
+# DETECT-02: the ONLY three subtypes that enqueue. Everything else --
+# every known noise subtype (per 04-CONTEXT.md's Notification Filtering
+# & Dedup decision) and any subtype not yet known about -- is denied by
+# simply not being in this array. Deliberately no deny-list branch
+# naming noise types here: denial-by-absence is the entire mechanism,
+# so this file never spells out a noise subtype literally.
+_VIGIL_NOTIFICATION_ALLOWLIST=(idle_prompt permission_prompt agent_needs_input)
+
+json="$(vigil_hook_read_stdin)"
+notif_type="$(vigil_hook_jq_field "$json" notification_type unknown)"
+vigil_hook_debug "Notification fired (notification_type=$notif_type)"
+
+allowed=0
+for t in "${_VIGIL_NOTIFICATION_ALLOWLIST[@]}"; do
+    if [[ "$notif_type" == "$t" ]]; then
+        allowed=1
+        break
+    fi
+done
+
+if [[ "$allowed" -ne 1 ]]; then
+    vigil_hook_debug "notification_type '$notif_type' not in allow-list, skipping"
+    exit 0
+fi
+
+pane_id="$(vigil_hook_pane_id)" || {
+    vigil_hook_debug "TMUX_PANE unset, no-op"
+    exit 0
+}
+
+"$CURRENT_DIR/vigil-queue" enqueue "$pane_id" || vigil_hook_debug "enqueue failed (ignored, fail-open)"
