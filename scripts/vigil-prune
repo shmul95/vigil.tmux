@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# vigil-prune — thin wrapper around `vigil-queue prune`, wired as the
+# action for vigil.tmux's `pane-exited` tmux hook (QUEUE-03's fast
+# path; see 05-CONTEXT.md's two-layer design). Never decides
+# liveness itself beyond listing panes -- the actual filtering logic
+# stays single-sourced in vigil-queue (T-02-08, Phase 2's existing
+# test-seam contract).
+#
+# `pane-exited` fires only for a pane's own process exiting normally
+# (remain-on-exit off, tmux's default) -- it does NOT fire for
+# kill-pane/kill-window/kill-session/kill-server (PITFALLS.md
+# Pitfall 6, empirically confirmed against a real server: only the
+# natural-exit case ran this hook's action). vigil-advance's own
+# lazy prune-on-read is the only backstop for those cases, not this
+# script -- do not add kill-pane/kill-session handling here.
+#
+# By the time this hook fires, tmux has already removed the dead
+# pane from its own tables, so a fresh `tmux list-panes -a`
+# naturally excludes it -- no bookkeeping is needed to know which
+# pane just died.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+
+# Outside tmux this is a silent no-op -- mirrors vigil-advance/
+# vigil.tmux's own guard. In practice this hook only ever fires
+# from inside a live tmux server, but the guard keeps this script
+# safe to invoke by hand.
+if ! vigil_in_tmux; then
+	exit 0
+fi
+
+live_panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null || true)"
+# shellcheck disable=SC2086 # intentional word-splitting: one pane_id per arg
+"$CURRENT_DIR/vigil-queue" prune $live_panes >/dev/null 2>&1 || true

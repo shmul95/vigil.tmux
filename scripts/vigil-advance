@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# vigil-advance — Alt+v handler (NAV-01/NAV-02/NAV-03): jump to the
+# FIFO head when not already on it, or rotate the head to the back
+# and jump to the new head when already on it. Runs a lazy
+# prune-on-read backstop before every navigation decision -- the
+# self-healing half of QUEUE-03 (05-CONTEXT.md's two-layer design):
+# pane-exited (vigil.tmux's hook, wired to vigil-prune) is the fast
+# path for a normal process exit, but it never fires for
+# kill-pane/kill-session/kill-server (PITFALLS.md Pitfall 6,
+# empirically confirmed), so this script cannot assume the queue it
+# reads is already clean.
+#
+# Invoked via vigil.tmux's `bind-key -n M-v run-shell -b <this
+# script>`. tmux sets $TMUX for run-shell-spawned processes to the
+# invoking server's own socket (empirically verified against a
+# custom -L/$TMUX_TMPDIR server, not assumed from docs), so
+# vigil_runtime_dir resolves correctly with zero extra wiring --
+# this is NOT a Claude Code hook, so none of vigil-hook-common.sh's
+# TMUX_PANE/fail-open machinery applies. This script's own "what
+# pane is the user on" question is answered via `tmux
+# display-message -p '#{pane_id}'`, which is exactly correct here
+# (unlike Pitfall 9's warning against that same call inside a
+# Claude Code hook, where it would return the wrong pane).
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+
+# Outside tmux (e.g. invoked by hand during development with no
+# $TMUX) this is a silent no-op, mirroring vigil-publish/
+# vigil.tmux's own guard.
+if ! vigil_in_tmux; then
+	exit 0
+fi
+
+VIGIL_QUEUE="$CURRENT_DIR/vigil-queue"
+
+# vigil_advance_flash <message> — ends the run with tmux's own
+# ephemeral status-line message (NAV-03), no focus change. Factored
+# out because both the empty-queue case and the retries-exhausted
+# fail-safe below reach the identical outcome.
+vigil_advance_flash() {
+	tmux display-message "$1"
+	exit 0
+}
+
+# Bounded retry: each iteration prunes dead entries then re-derives
+# a target, so a second (or third...) pass only happens when the
+# chosen target died in the narrow race window between this
+# iteration's prune and its own switch-client attempt --
+# vanishingly rare in practice. 64 is comfortably above any
+# realistic queue depth (Claude's Discretion, 05-CONTEXT.md);
+# exhausting it would mean something is non-convergent, which the
+# fail-safe flash below treats identically to an empty queue rather
+# than erroring or leaving focus undefined.
+MAX_ATTEMPTS=64
+attempt=0
+while ((attempt < MAX_ATTEMPTS)); do
+	attempt=$((attempt + 1))
+
+	# Lazy prune-on-read backstop (QUEUE-03): reconcile against every
+	# pane on this server, all sessions, not just the current one
+	# (05-CONTEXT.md's "Live-pane-list source" decision; matches
+	# vigil-queue's own tmux-independent design). Tolerate a failure
+	# here rather than aborting -- switch-client's own exit status
+	# below is the real safety net if this prune doesn't fully land.
+	live_panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null || true)"
+	# shellcheck disable=SC2086 # intentional word-splitting: one pane_id per arg
+	"$VIGIL_QUEUE" prune $live_panes >/dev/null 2>&1 || true
+
+	head_json="$("$VIGIL_QUEUE" peek)" || head_json=""
+	head_pane="$(jq -r '.pane_id // empty' <<<"${head_json:-null}" 2>/dev/null || true)"
+
+	if [[ -z "$head_pane" ]]; then
+		vigil_advance_flash "Vigil: nothing waiting"
+	fi
+
+	current_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+
+	if [[ -n "$current_pane" && "$current_pane" == "$head_pane" ]]; then
+		# NAV-02: already on the head -- rotate it to the back and
+		# jump to the pane that was waiting second-longest.
+		# vigil-queue rotate returns the new head's pane_id directly
+		# on its own stdout (Phase 2), so there is no separate peek
+		# call and no race window between rotating and reading the
+		# new head (05-CONTEXT.md's Rotate-and-Jump Semantics).
+		target="$("$VIGIL_QUEUE" rotate)" || continue
+	else
+		# NAV-01: not on the head -- read-only jump, no queue
+		# mutation.
+		target="$head_pane"
+	fi
+
+	# switch-client's own exit status IS the liveness check -- do
+	# NOT pre-flight with `tmux display-message -p -t "$target"
+	# '#{pane_id}'` first: empirically, that command returns exit 0
+	# with EMPTY output for a nonexistent pane (it does not error),
+	# so it cannot distinguish a dead target from a live one.
+	# switch-client correctly fails (exit 1, "can't find pane") and
+	# changes nothing when $target no longer exists.
+	if tmux switch-client -t "$target" 2>/dev/null; then
+		exit 0
+	fi
+	# $target died between the prune above and this switch-client
+	# attempt; loop again so the next iteration's prune removes it
+	# for real.
+done
+
+# Unreachable in any normal run (every iteration either exits or
+# removes the one dead target it just found) -- but if it is ever
+# reached, fail exactly like the empty-queue case rather than
+# erroring or leaving focus in an undefined state.
+vigil_advance_flash "Vigil: nothing waiting"
