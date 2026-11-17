@@ -25,7 +25,7 @@ teardown() {
 	vigil-queue enqueue '%1'
 	[ "$(tmux show-options -gv @vigil_queue_count)" = '1' ]
 	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '1 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]1 Vigil #[fg=red]●#[default]' ]
 	[ "$(tmux show-options -gv status-interval)" = '60' ]
 }
 
@@ -57,7 +57,7 @@ teardown() {
 	vigil-publish on
 	vigil-publish off
 	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '1 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]1 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "rotate republishes the unchanged count" {
@@ -65,7 +65,7 @@ teardown() {
 	vigil-queue enqueue '%2'
 	vigil-queue rotate
 	[ "$(tmux show-options -gv @vigil_queue_count)" = '2' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '2 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]2 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "prune republishes the surviving count" {
@@ -73,13 +73,13 @@ teardown() {
 	vigil-queue enqueue '%2'
 	vigil-queue prune '%1'
 	[ "$(tmux show-options -gv @vigil_queue_count)" = '1' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '1 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]1 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "dequeue of the last entry publishes a zero count" {
 	vigil-queue enqueue '%1'
 	vigil-queue dequeue '%1'
-	[ "$(tmux show-options -gv @vigil_status)" = '0 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]0 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "status-right expands to USERSEG plus the published status" {

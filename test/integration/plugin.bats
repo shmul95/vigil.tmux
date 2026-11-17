@@ -102,7 +102,7 @@ teardown() {
 	vigil_load_plugin
 	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
 	[ "$(tmux show-options -gv @vigil_queue_count)" = '0' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '0 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]0 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "first load seeds without resolving the runtime dir" {
@@ -131,7 +131,7 @@ teardown() {
 	tmux set-option -gu @vigil_status
 	vigil_load_plugin
 	[ "$(tmux show-options -gv @vigil_queue_count)" = '2' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '2 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]2 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "WR-06: a non-numeric pre-existing @vigil_queue_count is repaired from the persisted queue" {
@@ -158,7 +158,7 @@ teardown() {
 	tmux set-option -g @vigil_status 'stale-marker'
 	vigil_load_plugin
 	[ "$(tmux show-options -gv @vigil_queue_count)" = '1' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '1 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]1 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "WR-06/WR-03: a sanitized @vigil_auto also re-renders a stale @vigil_status" {
@@ -170,7 +170,7 @@ teardown() {
 	tmux set-option -g @vigil_status '#[fg=white]0 Vigil #[fg=green]●#[default]'
 	vigil_load_plugin
 	[ "$(tmux show-options -gv @vigil_auto)" = 'off' ]
-	[ "$(tmux show-options -gv @vigil_status)" = '0 Vigil #[fg=red]●#[default]' ]
+	[ "$(tmux show-options -gv @vigil_status)" = '#[fg=white]0 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "WR-03: a failed status-right read leaves status-right untouched and exits 0" {

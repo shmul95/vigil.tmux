@@ -76,7 +76,7 @@ stub_opt() {
 	[ "$status" -eq 0 ]
 	[ "$(stub_opt @vigil_queue_count)" = "1" ]
 	[ "$(stub_opt @vigil_auto)" = "off" ]
-	[ "$(stub_opt @vigil_status)" = '1 Vigil #[fg=red]●#[default]' ]
+	[ "$(stub_opt @vigil_status)" = '#[fg=white]1 Vigil #[fg=red]●#[default]' ]
 	[ "$(grep -c '^set-option -g @vigil_status' "$TMUX_STUB_LOG")" -eq 1 ]
 }
 

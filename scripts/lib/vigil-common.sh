@@ -326,7 +326,7 @@ vigil_render_status() {
 	if [[ "$auto" == "on" ]]; then
 		printf '#[fg=white]%s Vigil #[fg=green]●#[default]' "$count"
 	else
-		printf '%s Vigil #[fg=red]●#[default]' "$count"
+		printf '#[fg=white]%s Vigil #[fg=red]●#[default]' "$count"
 	fi
 }
 

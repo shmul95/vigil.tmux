@@ -72,7 +72,7 @@ teardown() {
 
 	run vigil_render_status 0 off
 	[ "$status" -eq 0 ]
-	[ "$output" = '0 Vigil #[fg=red]●#[default]' ]
+	[ "$output" = '#[fg=white]0 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "vigil_render_status treats anything other than the literal on as off" {
@@ -80,7 +80,7 @@ teardown() {
 
 	run vigil_render_status 2 anything-else
 	[ "$status" -eq 0 ]
-	[ "$output" = '2 Vigil #[fg=red]●#[default]' ]
+	[ "$output" = '#[fg=white]2 Vigil #[fg=red]●#[default]' ]
 }
 
 @test "vigil_read_queue_count is 0 when the queue file is absent" {
@@ -169,7 +169,7 @@ teardown() {
 		'show-options -gv @vigil_auto' \
 		'set-option -g @vigil_queue_count 0' \
 		'set-option -g @vigil_auto off' \
-		'set-option -g @vigil_status 0 Vigil #[fg=red]●#[default]' \
+		'set-option -g @vigil_status #[fg=white]0 Vigil #[fg=red]●#[default]' \
 		'list-clients -F #{client_name}' \
 		'refresh-client -S -t client-0')"
 	[ "$(cat "$TMUX_STUB_LOG")" = "$expected" ]
@@ -188,7 +188,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 
 	grep -Fxq 'set-option -g @vigil_auto off' "$TMUX_STUB_LOG"
-	grep -Fxq 'set-option -g @vigil_status 0 Vigil #[fg=red]●#[default]' "$TMUX_STUB_LOG"
+	grep -Fxq 'set-option -g @vigil_status #[fg=white]0 Vigil #[fg=red]●#[default]' "$TMUX_STUB_LOG"
 }
 
 @test "vigil-publish with a bogus argument exits 1 and publishes nothing" {
