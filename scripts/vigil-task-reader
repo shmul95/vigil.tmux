@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# vigil-task-reader — TASKREAD-01/TASKREAD-02: lists open task notes
+# assigned to the hardcoded "samuel" slug from $VIGIL_TASKS_DIR, one
+# absolute file path per line on stdout, nothing else. Malformed or
+# unreadable notes are logged to stderr (filename + fixed reason) and
+# skipped; a single bad note never aborts the run (fail-open, matching
+# this project's existing hook-wiring philosophy). Exit 0 always, even
+# when zero tasks are found (07-CONTEXT.md Output Format decision).
+#
+# Single-purpose, standalone CLI matching vigil-advance's shape (not
+# vigil-queue's subcommand style) -- no tmux, no network, pure file I/O.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-frontmatter.sh"
+
+# Hardcoded per 07-CONTEXT.md "Identity Resolution": this project is
+# built for a single power user; a lookup mechanism/config file for
+# assignee resolution is premature over-engineering for a one-person
+# target.
+VIGIL_TASK_ASSIGNEE="samuel"
+
+# Env-overridable (tests point this at test/fixtures/tasks/samuel/,
+# production defaults to the real memtide vault path) -- same script,
+# no fixture-vs-real branching inside this reader (07-CONTEXT.md).
+VIGIL_TASKS_DIR="${VIGIL_TASKS_DIR:-$HOME/Repositories/memtide-dev/repos/memtide-vault/02_Projects/memtide/Tasks/samuel}"
+
+# Canonicalize to an absolute path when the directory exists, so
+# stdout's path contract ("absolute file paths") holds regardless of
+# how the caller spelled $VIGIL_TASKS_DIR (relative path, trailing
+# slash, symlink component). A directory that doesn't exist yet is
+# left as-is -- nullglob below still yields zero iterations either
+# way, matching the "missing dir == empty dir" contract.
+if [[ -d "$VIGIL_TASKS_DIR" ]]; then
+	VIGIL_TASKS_DIR="$(cd "$VIGIL_TASKS_DIR" && pwd)"
+fi
+
+REQUIRED_FIELDS=(id status assignee)
+
+# T-07-07: `id` becomes the internal sort/join key below
+# (`results+=("${VIGIL_FM[id]}"$'\t'"$note")` then
+# `sort -t $'\t' -k1,1 | cut -f2-`). Task notes are untrusted input
+# (written by an LLM-driven cron job reading arbitrary Discord
+# content), so a crafted `id` containing a literal tab or embedded
+# newline would corrupt that tab-delimited pipeline and could leak a
+# fragment onto stdout -- violating this script's own "stdout is
+# exactly absolute file paths, one per line, nothing else" contract
+# (TASKREAD-01). The real producer's `id` is always a 14-digit
+# timestamp (07-RESEARCH.md), so anything that doesn't match that
+# exact shape is treated as malformed, not merely "present".
+VIGIL_ID_SHAPE_RE='^[0-9]{14}$'
+
+# 07-RESEARCH.md Pattern 2: without nullglob, an empty/nonexistent
+# directory's glob expands to the literal unexpanded string "*.md",
+# which the loop below would then try to treat as a real filename.
+shopt -s nullglob
+
+results=()
+for note in "$VIGIL_TASKS_DIR"/*.md; do
+	if ! vigil_frontmatter_parse "$note"; then
+		echo "vigil-task-reader: $note: unparseable frontmatter" >&2
+		continue
+	fi
+
+	missing=""
+	for field in "${REQUIRED_FIELDS[@]}"; do
+		if [[ -z "${VIGIL_FM[$field]:-}" ]]; then
+			missing="$field"
+			break
+		fi
+	done
+	if [[ -n "$missing" ]]; then
+		echo "vigil-task-reader: $note: missing field '$missing'" >&2
+		continue
+	fi
+
+	# T-07-07 (shape validation, immediately after the non-empty check
+	# above): a literal tab or any other non-digit content inside `id`
+	# is rejected here, before `id` ever reaches the sort/join
+	# pipeline below. Same bucket/code path as the missing-field
+	# checks just above -- log filename + specific reason, skip,
+	# continue to the next file; never aborts the run.
+	if [[ ! "${VIGIL_FM[id]}" =~ $VIGIL_ID_SHAPE_RE ]]; then
+		echo "vigil-task-reader: $note: id field is not a 14-digit timestamp" >&2
+		continue
+	fi
+
+	# Defense in depth (07-CONTEXT.md "assignee field double-check"):
+	# the reader only ever globs inside Tasks/<assignee>/, but a
+	# misfiled note (wrong directory, copy-paste error) with a
+	# mismatched assignee value must still be treated as malformed, not
+	# silently accepted on directory placement alone. The stderr
+	# message never echoes the note's actual (wrong) assignee value --
+	# only the filename and a fixed reason string, matching the
+	# information-disclosure constraint every other malformed-note
+	# message in this script already follows.
+	if [[ "${VIGIL_FM[assignee]}" != "$VIGIL_TASK_ASSIGNEE" ]]; then
+		echo "vigil-task-reader: $note: assignee mismatch" >&2
+		continue
+	fi
+
+	[[ "${VIGIL_FM[status]}" == "open" ]] || continue # valid, silently filtered
+
+	results+=("${VIGIL_FM[id]}"$'\t'"$note")
+done
+
+if ((${#results[@]} > 0)); then
+	printf '%s\n' "${results[@]}" | sort -t $'\t' -k1,1 | cut -f2-
+fi
+exit 0
