@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# vigil-kitty-focus — AUTO-02/AUTO-04/FOCUS-01/FOCUS-02: two-tier
+# kitty focus-pull adapter. Usage: vigil-kitty-focus pull <pane_id>
+#
+# Tier 1 (best-effort, optimistic): glob for a live kitty
+# remote-control socket under $XDG_RUNTIME_DIR and try
+# `kitten @ focus-window` against it. kitty always PID-suffixes
+# `listen_on` (06-RESEARCH.md Critical Pitfall 4), and the
+# KITTY_LISTEN_ON/KITTY_WINDOW_ID env vars a long-lived tmux pane
+# might otherwise trust can go stale across a kitty restart (tmux's
+# default update-environment list omits both) -- this script
+# resolves the socket itself on every call instead of trusting any
+# inherited env var. The call's own exit code is NEVER a
+# focus-success signal (kitty's own rc/focus_window.py only reports
+# whether the RC command was processed, never whether the
+# compositor granted OS-level focus -- Pitfall 6): Tier 2 always
+# fires regardless of Tier 1's outcome.
+#
+# Tier 2 (always-armed, reliable): resolve the target pane's own
+# tty device via `tmux display-message -p -t <pane_id>
+# '#{pane_tty}'` and write a DCS-wrapped OSC 99 desktop-notification
+# escape sequence DIRECTLY to that device file. Never write it to
+# this script's own stdout: Claude Code's hook contract captures
+# and parses hook stdout for its own control purposes, so a
+# sequence written there never reaches any terminal at all
+# (Critical Pitfall 2). Requires tmux's global passthrough option
+# set to `all` (not `on` -- Critical Pitfall 1: `on` only forwards
+# passthrough from a VISIBLE pane, and this fires precisely when the
+# target pane is invisible) -- vigil.tmux (06-02) sets this globally
+# on every plugin load; not re-asserted here.
+#
+# AUTO-04 gate: reads @vigil_kitty_focused (maintained by
+# vigil-focus-track's client-focus-in/client-focus-out hooks,
+# 06-02). Missing/unset is treated as "not focused" -- fail toward
+# pulling, since silently missing a real attention need is worse
+# than an occasional redundant pull.
+#
+# AUTO-02's second half: between the two tiers, synchronously
+# selects the FIFO head pane in tmux (06-CONTEXT.md:26 -- reuse
+# vigil-advance's jump logic, NAV-01 case). This is the bare,
+# retry-free switch-client call only -- no bounded-retry loop, no
+# prune backstop -- matching Plan 06-03's own auto-next block's
+# rationale: a dead target is tolerable to silently drop here.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+
+cmd_pull() {
+	local pane_id="${1:?pane_id required}"
+
+	# Defense in depth (ASVS V5): pane_id ultimately originates from
+	# vigil-queue's own JSON, itself sourced from tmux-generated
+	# #{pane_id} strings at enqueue time -- never from pane
+	# content/title. Refuse anything that doesn't match tmux's own
+	# pane-id shape before it reaches a tmux command argument or
+	# gets embedded in the OSC 99 payload, so a corrupted/tampered
+	# queue.json can never smuggle something else through this path.
+	if ! vigil_valid_pane_id "$pane_id"; then
+		echo "vigil-kitty-focus: refusing malformed pane_id '$pane_id'" >&2
+		return 1
+	fi
+
+	if ! vigil_in_tmux; then
+		return 0
+	fi
+
+	local focused
+	focused="$(tmux show-options -gv @vigil_kitty_focused 2>/dev/null || true)"
+	if [[ "$focused" == "on" ]]; then
+		return 0
+	fi
+
+	# Tier 1: best-effort, optimistic, socket path NOT assumed fixed
+	# (Critical Pitfall 4). `timeout 2` bounds the worst case where a
+	# kitten process hangs instead of returning promptly -- this
+	# script's own callers (06-03) invoke it detached, but an
+	# unbounded hung kitten child is still an avoidable resource
+	# leak.
+	local sock
+	for sock in "${XDG_RUNTIME_DIR:-/tmp}"/kitty-vigil*; do
+		[[ -S "$sock" ]] || continue
+		timeout 2 kitten @ --to "unix:$sock" focus-window --match id:1 \
+			--no-response >/dev/null 2>&1 && break
+	done
+
+	# AUTO-02: select the FIFO head pane in tmux after attempting to
+	# raise kitty. $pane_id IS the FIFO head here -- every caller
+	# (Plan 06-03's hook wiring) always invokes this with vigil-queue
+	# peek's own head pane, never an arbitrary pane. Bare call, no
+	# retry loop (vigil-advance's NAV-01 shape, simplified exactly
+	# like Plan 06-03's auto-next block): a dead/already-gone target
+	# is tolerable to silently drop from a detached background pull.
+	tmux switch-client -t "$pane_id" 2>/dev/null || true
+
+	# Tier 2: always-armed, written directly to the pane's own tty
+	# (Critical Pitfalls 1 and 2) -- never to this script's stdout.
+	local pane_tty
+	pane_tty="$(tmux display-message -p -t "$pane_id" '#{pane_tty}' 2>/dev/null)" || return 0
+	[[ -n "$pane_tty" && -w "$pane_tty" ]] || return 0
+
+	local esc payload dcs
+	esc=$'\x1b'
+	payload="${esc}]99;i=vigil-${pane_id};a=focus;Vigil: a session needs you${esc}\\"
+	dcs="${esc}Ptmux;${payload//$esc/$esc$esc}${esc}\\"
+	printf '%s' "$dcs" >"$pane_tty" 2>/dev/null || true
+}
+
+case "${1:-}" in
+pull)
+	shift
+	cmd_pull "$@"
+	;;
+*)
+	echo "vigil-kitty-focus: unknown subcommand '${1:-}'" >&2
+	exit 1
+	;;
+esac

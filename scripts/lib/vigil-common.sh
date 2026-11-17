@@ -288,6 +288,19 @@ vigil_in_tmux() {
 	[[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1
 }
 
+# vigil_valid_pane_id <pane_id> — 0 only when <pane_id> matches
+# tmux's own #{pane_id} shape exactly ("%" followed by one or more
+# digits, e.g. "%7", "%123"). Defense-in-depth (ASVS V5): every
+# caller that interpolates a pane_id into a tmux/kitten command
+# argument or an OSC 99 payload string should validate it with this
+# first, even though pane_id values are already sourced exclusively
+# from vigil-queue's own tmux-generated #{pane_id} strings, never
+# from pane content/title -- a corrupted or hand-edited queue.json
+# must never be able to smuggle something else through this path.
+vigil_valid_pane_id() {
+	[[ "${1:-}" =~ ^%[0-9]+$ ]]
+}
+
 # vigil_read_queue_count — echoes an integer >= 0; 0 when queue.json is
 # absent, unreadable, or not {"queue":[...]}.
 vigil_read_queue_count() {
