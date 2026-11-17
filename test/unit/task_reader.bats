@@ -4,6 +4,8 @@
 # scripts/lib/vigil-frontmatter.sh. No tmux/network dependency -- pure
 # file I/O against the fixtures in test/fixtures/tasks/samuel/.
 
+bats_require_minimum_version 1.5.0
+
 load '../test_helper'
 
 FIXTURES_DIR_GLOBAL=""
@@ -166,7 +168,7 @@ make_tasks_dir() {
 		missing-assignee.md mismatched-assignee.md unparseable-no-close.md \
 		unparseable-no-open.md quoted-values.md malformed-id-shape.md)"
 	export VIGIL_TASKS_DIR="$dir"
-	run vigil-task-reader
+	run --separate-stderr vigil-task-reader
 	[ "$status" -eq 0 ]
 	local line_count
 	line_count="$(printf '%s\n' "$output" | grep -c . || true)"
