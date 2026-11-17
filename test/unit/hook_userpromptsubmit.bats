@@ -95,3 +95,58 @@ load '../test_helper'
 
 	exec {writer_fd}>&-
 }
+
+@test "AUTO-03: with auto mode on, attempts switch-client to the FIFO head after dequeue" {
+	vigil-queue enqueue '%9'
+	stub_dir="$(mktemp -d)"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$stub_dir/calls.log"
+[[ "\$1" == "show-options" ]] && printf 'on'
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+
+	PATH="$stub_dir:$PATH" TMUX="stub,0,0" TMUX_PANE='%7' run bash -c "vigil-hook-userpromptsubmit < '$BATS_TEST_DIRNAME/../fixtures/hooks/userpromptsubmit.json'"
+	[ "$status" -eq 0 ]
+	grep -Fq 'switch-client -t %9' "$stub_dir/calls.log"
+
+	rm -rf "$stub_dir"
+}
+
+@test "AUTO-03: with auto mode off, never attempts switch-client" {
+	vigil-queue enqueue '%9'
+	stub_dir="$(mktemp -d)"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$stub_dir/calls.log"
+[[ "\$1" == "show-options" ]] && printf 'off'
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+
+	PATH="$stub_dir:$PATH" TMUX="stub,0,0" TMUX_PANE='%7' run bash -c "vigil-hook-userpromptsubmit < '$BATS_TEST_DIRNAME/../fixtures/hooks/userpromptsubmit.json'"
+	[ "$status" -eq 0 ]
+	! grep -q 'switch-client' "$stub_dir/calls.log" 2>/dev/null
+
+	rm -rf "$stub_dir"
+}
+
+@test "AUTO-03: with TMUX unset, never attempts switch-client even if a stale/garbage @vigil_auto stub would otherwise say on" {
+	vigil-queue enqueue '%9'
+	stub_dir="$(mktemp -d)"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$stub_dir/calls.log"
+printf 'on'
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+
+	unset TMUX
+	PATH="$stub_dir:$PATH" TMUX_PANE='%7' run bash -c "vigil-hook-userpromptsubmit < '$BATS_TEST_DIRNAME/../fixtures/hooks/userpromptsubmit.json'"
+	[ "$status" -eq 0 ]
+	[ ! -f "$stub_dir/calls.log" ] || ! grep -q 'switch-client' "$stub_dir/calls.log"
+
+	rm -rf "$stub_dir"
+}

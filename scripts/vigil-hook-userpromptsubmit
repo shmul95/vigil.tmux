@@ -39,3 +39,27 @@ pane_id="$(vigil_hook_pane_id)" || {
 # commands run with the session's own cwd, which has no reliable
 # relationship to this repo's scripts/ directory or to $PATH.
 "$CURRENT_DIR/vigil-queue" dequeue "$pane_id" || vigil_hook_debug "dequeue failed (ignored, fail-open)"
+
+# AUTO-03: auto-next. Deliberately the SIMPLER half of
+# vigil-advance's NAV-01 jump-only logic -- no bounded-retry loop,
+# no prune-on-read backstop, no rotate branch (06-PATTERNS.md):
+# vigil-advance's retry/prune machinery exists to make an
+# INTERACTIVE Alt+v keypress robust against a just-died pane;
+# auto-next is a background hook side-effect where a switch-client
+# failure (dead target) is tolerable to silently drop, matching
+# this file's existing fail-open contract. Fired synchronously
+# (NOT detached, unlike AUTO-02's pull call above): switch-client
+# is a single, fast, purely-local tmux call with no external
+# process/IPC, so it carries none of the pull call's timeout risk.
+# Gated on $TMUX being set BEFORE the bare tmux call, same
+# reasoning as the AUTO-02 block in vigil-hook-stop/notification.
+if [[ -n "${TMUX:-}" ]]; then
+	auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+	if [[ "$auto" == "on" ]]; then
+		head_json="$("$CURRENT_DIR/vigil-queue" peek 2>/dev/null || true)"
+		head_pane="$(jq -r '.pane_id // empty' <<<"${head_json:-null}" 2>/dev/null || true)"
+		if [[ -n "$head_pane" ]]; then
+			tmux switch-client -t "$head_pane" 2>/dev/null || true
+		fi
+	fi
+fi

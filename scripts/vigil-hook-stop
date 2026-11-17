@@ -37,3 +37,26 @@ pane_id="$(vigil_hook_pane_id)" || {
 }
 
 "$CURRENT_DIR/vigil-queue" enqueue "$pane_id" || vigil_hook_debug "enqueue failed (ignored, fail-open)"
+
+# AUTO-02: pull-on-enqueue. Every successful enqueue re-pulls while
+# auto mode is on (06-RESEARCH.md Open Question 1's adopted
+# recommendation -- no debounce here; vigil-kitty-focus's own
+# @vigil_kitty_focused gate, Plan 06-01, is what actually prevents
+# a redundant pull once the terminal is focused). Fired detached
+# (&/disown): a slow/hung kitten or tmux IPC round-trip must never
+# delay this hook's own fail-open exit (DETECT-05). Gated on $TMUX
+# being set BEFORE the bare tmux call (mirrors vigil_in_tmux's
+# check, used by every other Vigil script) -- without this, a
+# $TMUX-unset invocation does not fail closed, it can silently
+# reach an unrelated ambient default-socket tmux server instead.
+if [[ -n "${TMUX:-}" ]]; then
+    auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+    if [[ "$auto" == "on" ]]; then
+        head_json="$("$CURRENT_DIR/vigil-queue" peek 2>/dev/null || true)"
+        head_pane="$(jq -r '.pane_id // empty' <<<"${head_json:-null}" 2>/dev/null || true)"
+        if [[ -n "$head_pane" ]]; then
+            "$CURRENT_DIR/vigil-kitty-focus" pull "$head_pane" &
+            disown 2>/dev/null || true
+        fi
+    fi
+fi

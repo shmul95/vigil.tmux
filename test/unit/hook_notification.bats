@@ -107,3 +107,69 @@ load '../test_helper'
 
 	exec {writer_fd}>&-
 }
+
+@test "AUTO-02: an allow-listed notification with auto mode on fires a detached pull" {
+	stub_dir="$(mktemp -d)"
+	fake_tty="$stub_dir/pane_tty"
+	: >"$fake_tty"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$stub_dir/calls.log"
+case "\$1" in
+show-options)
+	[[ "\$*" == *"@vigil_auto"* ]] && printf 'on'
+	;;
+display-message)
+	printf '%s' "$fake_tty"
+	;;
+esac
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+	cat >"$stub_dir/kitten" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+	chmod +x "$stub_dir/kitten"
+
+	PATH="$stub_dir:$PATH" TMUX="stub,0,0" TMUX_PANE='%7' run vigil-hook-notification <"$BATS_TEST_DIRNAME/../fixtures/hooks/notification_idle_prompt.json"
+	[ "$status" -eq 0 ]
+
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ -s "$fake_tty" ] && break
+		sleep 0.2
+	done
+	[ -s "$fake_tty" ]
+	# AUTO-02's second half (checker BLOCKER fix): vigil-kitty-focus
+	# pull (Plan 06-01) also synchronously selects the FIFO head pane
+	# in tmux -- confirm the stub recorded that switch-client call.
+	grep -Fq 'switch-client -t %7' "$stub_dir/calls.log"
+
+	rm -rf "$stub_dir"
+}
+
+@test "AUTO-02: a denied notification type never fires a pull, even with auto mode on" {
+	stub_dir="$(mktemp -d)"
+	fake_tty="$stub_dir/pane_tty"
+	: >"$fake_tty"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+show-options)
+	[[ "\$*" == *"@vigil_auto"* ]] && printf 'on'
+	;;
+display-message)
+	printf '%s' "$fake_tty"
+	;;
+esac
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+
+	PATH="$stub_dir:$PATH" TMUX="stub,0,0" TMUX_PANE='%7' run vigil-hook-notification <"$BATS_TEST_DIRNAME/../fixtures/hooks/notification_auth_success.json"
+	[ "$status" -eq 0 ]
+	sleep 0.3
+	[ ! -s "$fake_tty" ]
+
+	rm -rf "$stub_dir"
+}
