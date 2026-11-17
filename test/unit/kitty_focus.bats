@@ -125,6 +125,15 @@ teardown() {
 }
 
 @test "FOCUS-02: Tier 2 still fires even when Tier 1 finds no live socket" {
+	# Kill the real server BEFORE unlinking its socket path, not after.
+	# `rm -f` alone only removes the directory entry -- the tmux server
+	# process stays alive, bound to a now-unreachable socket, and
+	# teardown's own `kill-server -S "$FAKE_SOCK"` can no longer reach it
+	# either (same deleted path). The orphaned server then inherits this
+	# test run's stdout (new-session was never given its own redirect),
+	# keeping that pipe open forever and hanging the whole bats process
+	# even though every assertion in this file passes.
+	"$REAL_TMUX" -S "$FAKE_SOCK" kill-server 2>/dev/null || true
 	rm -f "$FAKE_SOCK"
 	TMUX_STUB_FOCUSED='off' run vigil-kitty-focus pull '%7'
 	[ "$status" -eq 0 ]
