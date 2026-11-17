@@ -36,6 +36,16 @@ if tmux list-keys -T root 2>/dev/null | grep -q -- ' M-v '; then
 fi
 tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
 
+# AUTO-01: M-V (capital, Alt+Shift+v) toggles auto mode -- distinct
+# from M-v's "advance" gesture by case alone (06-CONTEXT.md's
+# Auto-Mode Toggle decision, mirroring the M-v convention from
+# Phase 5). bind-key is naturally idempotent, exactly like the M-v
+# registration above.
+if tmux list-keys -T root 2>/dev/null | grep -q -- ' M-V '; then
+	echo "vigil: overwriting an existing M-V binding" >&2
+fi
+tmux bind-key -n M-V run-shell -b "$CURRENT_DIR/scripts/vigil-auto-toggle"
+
 # QUEUE-03 fast path: prune immediately whenever any pane's own
 # process exits normally. Does NOT fire for
 # kill-pane/kill-session/kill-server (PITFALLS.md Pitfall 6) --
@@ -67,10 +77,35 @@ tmux bind-key -n M-v run-shell -b "$CURRENT_DIR/scripts/vigil-advance"
 # raw newline byte is a vanishingly unlikely, self-inflicted
 # scenario for a personal tmux plugin, not worth a broader
 # metacharacter-sweeping guard.
+# AUTO-04 / 06-RESEARCH.md Critical Pitfall 3: focus-events must be
+# on for tmux to request/receive real OS-level focus transitions
+# from the outer terminal (kitty) and expose them via
+# client-focus-in/client-focus-out. Set unconditionally on every
+# load -- this is a global option, not a hook registration, so it
+# carries none of the single-quote re-parse risk below.
+tmux set-option -g focus-events on
+
+# FOCUS-02 / 06-RESEARCH.md Critical Pitfall 1: `allow-passthrough
+# on` (cabanashmul's Nix-managed tshmux.nix still ships this) only
+# forwards the DCS passthrough escape from a VISIBLE pane -- the
+# OSC 99 fallback fires precisely when the target pane is
+# INVISIBLE (the user is elsewhere), so `on` silently drops exactly
+# the sequence this feature exists to deliver. Correct it to `all`
+# here, in-repo, rather than requiring a cross-repo Nix edit: this
+# global `set-option -g` call runs after tmux.conf's own
+# extraConfig line on every plugin load (vigil.tmux is itself
+# invoked from inside that same extraConfig via `run-shell` on the
+# live machine) and is the last writer of the same global option,
+# so it wins without any dependency on the Nix source being
+# edited.
+tmux set-option -g allow-passthrough all
+
 if [[ "$CURRENT_DIR" == *"'"* ]]; then
-	echo "vigil: install path contains a single quote; skipping the pane-exited fast-path hook (QUEUE-03's backstop still applies)" >&2
+	echo "vigil: install path contains a single quote; skipping the pane-exited/focus-tracking fast-path hooks (QUEUE-03's lazy backstop and AUTO-04's fail-toward-pulling default still apply)" >&2
 else
 	tmux set-hook -g pane-exited "run-shell -b '${CURRENT_DIR}/scripts/vigil-prune'"
+	tmux set-hook -g client-focus-in  "run-shell -b '${CURRENT_DIR}/scripts/vigil-focus-track in'"
+	tmux set-hook -g client-focus-out "run-shell -b '${CURRENT_DIR}/scripts/vigil-focus-track out'"
 fi
 
 # Sanitize @vigil_auto to exactly "on"/"off" and rewrite the option only
@@ -84,6 +119,19 @@ auto="$raw_auto"
 [[ "$auto" == "on" ]] || auto="off"
 if [[ "$auto" != "$raw_auto" ]]; then
 	tmux set-option -g @vigil_auto "$auto"
+fi
+
+# @vigil_kitty_focused mirrors @vigil_auto's sanitize-on-load shape
+# immediately above: default "off" (AUTO-04's documented
+# fail-toward-pulling direction -- 06-RESEARCH.md Code Examples)
+# whenever unset or any value other than the literal "on",
+# rewritten only when the sanitized value actually differs from
+# what was read.
+raw_kitty_focused="$(tmux show-options -gv @vigil_kitty_focused 2>/dev/null || true)"
+kitty_focused="$raw_kitty_focused"
+[[ "$kitty_focused" == "on" ]] || kitty_focused="off"
+if [[ "$kitty_focused" != "$raw_kitty_focused" ]]; then
+	tmux set-option -g @vigil_kitty_focused "$kitty_focused"
 fi
 
 # WR-06, part 1: a fresh tmux server (restart/crash) has no @vigil_*

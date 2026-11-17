@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# vigil-focus-track — AUTO-04 support. Hook handler for tmux's
+# client-focus-in/client-focus-out events (wired in vigil.tmux via
+# `set-hook -g client-focus-in/-out`, which requires
+# `focus-events on`, also set in vigil.tmux). tmux passes the event
+# name as this script's own invocation argument ($1), not as stdin
+# JSON -- this is a tmux-internal run-shell action, not a Claude
+# Code hook, so none of vigil-hook-common.sh's TMUX_PANE/fail-open
+# machinery applies here.
+#
+# Maintains @vigil_kitty_focused as a single scalar, single-writer
+# tmux user option -- identical pattern to @vigil_auto (Phase 3):
+# "in" always writes "on", "out" always writes "off",
+# unconditionally, since each invocation IS the authoritative event
+# (no read-compare needed, unlike vigil.tmux's own
+# sanitize-on-load blocks).
+set -euo pipefail
+
+case "${1:-}" in
+in) tmux set-option -g @vigil_kitty_focused on ;;
+out) tmux set-option -g @vigil_kitty_focused off ;;
+*) exit 1 ;;
+esac

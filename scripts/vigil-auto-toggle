@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# vigil-auto-toggle — AUTO-01: flips @vigil_auto to its opposite
+# value and republishes, via vigil-publish's own already-tested
+# lock/refresh path. Takes no argument (unlike vigil-publish itself,
+# which accepts an explicit on/off) -- this script's entire job is
+# "toggle from whatever it currently is". Bound to M-V (capital,
+# Alt+Shift+v) in vigil.tmux, distinct from M-v's "advance" gesture
+# by case alone (06-CONTEXT.md's Auto-Mode Toggle decision).
+set -euo pipefail
+
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "${BASH_SOURCE[0]%/*}/lib/vigil-common.sh"
+
+# Outside tmux this is a silent no-op with no filesystem side
+# effects, mirroring vigil-publish's own guard -- checking first
+# avoids resolving "current" below against a tmux server that
+# doesn't exist.
+if ! vigil_in_tmux; then
+	exit 0
+fi
+
+current="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+if [[ "$current" == "on" ]]; then
+	next="off"
+else
+	next="on"
+fi
+
+# Delegate entirely to vigil-publish's own tested lock-acquire,
+# option-write, lock-release, client-refresh sequence -- no
+# duplicated logic here.
+exec "${BASH_SOURCE[0]%/*}/vigil-publish" "$next"
