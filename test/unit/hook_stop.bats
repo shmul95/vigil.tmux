@@ -97,3 +97,102 @@ load '../test_helper'
 
 	exec {writer_fd}>&-
 }
+
+@test "AUTO-02: with auto mode on, fires a detached pull targeting the FIFO head" {
+	stub_dir="$(mktemp -d)"
+	fake_tty="$stub_dir/pane_tty"
+	: >"$fake_tty"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$stub_dir/calls.log"
+case "\$1" in
+show-options)
+	[[ "\$*" == *"@vigil_auto"* ]] && printf 'on'
+	;;
+display-message)
+	printf '%s' "$fake_tty"
+	;;
+esac
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+	cat >"$stub_dir/kitten" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+	chmod +x "$stub_dir/kitten"
+
+	PATH="$stub_dir:$PATH" TMUX="stub,0,0" TMUX_PANE='%7' run vigil-hook-stop <"$BATS_TEST_DIRNAME/../fixtures/hooks/stop.json"
+	[ "$status" -eq 0 ]
+
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ -s "$fake_tty" ] && break
+		sleep 0.2
+	done
+	[ -s "$fake_tty" ]
+	grep -aq 'vigil-%7' "$fake_tty"
+	# AUTO-02's second half (checker BLOCKER fix): vigil-kitty-focus
+	# pull (Plan 06-01) also synchronously selects the FIFO head pane
+	# in tmux -- confirm the stub recorded that switch-client call.
+	grep -Fq 'switch-client -t %7' "$stub_dir/calls.log"
+
+	rm -rf "$stub_dir"
+}
+
+@test "AUTO-02: with auto mode off, never fires a pull" {
+	stub_dir="$(mktemp -d)"
+	fake_tty="$stub_dir/pane_tty"
+	: >"$fake_tty"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+show-options)
+	[[ "\$*" == *"@vigil_auto"* ]] && printf 'off'
+	;;
+display-message)
+	printf '%s' "$fake_tty"
+	;;
+esac
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+
+	PATH="$stub_dir:$PATH" TMUX="stub,0,0" TMUX_PANE='%7' run vigil-hook-stop <"$BATS_TEST_DIRNAME/../fixtures/hooks/stop.json"
+	[ "$status" -eq 0 ]
+	sleep 0.3
+	[ ! -s "$fake_tty" ]
+
+	rm -rf "$stub_dir"
+}
+
+@test "AUTO-02: with TMUX unset, never fires a pull even if a stale/garbage @vigil_auto stub would otherwise say on" {
+	stub_dir="$(mktemp -d)"
+	fake_tty="$stub_dir/pane_tty"
+	: >"$fake_tty"
+	cat >"$stub_dir/tmux" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+show-options)
+	printf 'on'
+	;;
+display-message)
+	printf '%s' "$fake_tty"
+	;;
+esac
+exit 0
+STUB
+	chmod +x "$stub_dir/tmux"
+	cat >"$stub_dir/kitten" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+	chmod +x "$stub_dir/kitten"
+
+	unset TMUX
+	PATH="$stub_dir:$PATH" TMUX_PANE='%7' run vigil-hook-stop <"$BATS_TEST_DIRNAME/../fixtures/hooks/stop.json"
+	[ "$status" -eq 0 ]
+	sleep 0.3
+	[ ! -s "$fake_tty" ]
+
+	rm -rf "$stub_dir"
+}
