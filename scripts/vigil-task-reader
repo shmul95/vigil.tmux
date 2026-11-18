@@ -36,7 +36,12 @@ if [[ -d "$VIGIL_TASKS_DIR" ]]; then
 	VIGIL_TASKS_DIR="$(cd "$VIGIL_TASKS_DIR" && pwd)"
 fi
 
-REQUIRED_FIELDS=(id status assignee)
+# DEBT-01 (v1.1 audit): `created` is required because
+# vigil-task-done-check builds its `gh --updated ">=<created>"` bound
+# from this field. A note without it would pass this gate, then make
+# every completion check error out and fail open to "not done" --
+# silently respawning a completed task forever.
+REQUIRED_FIELDS=(id status assignee created)
 
 # T-07-07: `id` becomes the internal sort/join key below
 # (`results+=("${VIGIL_FM[id]}"$'\t'"$note")` then

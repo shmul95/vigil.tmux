@@ -56,6 +56,19 @@ if [[ ! "$id" =~ ^[0-9]{14}$ ]]; then
 	exit 1
 fi
 
+# DEBT-02 (v1.1 audit): re-check the note's assignee here, exactly as
+# vigil-task-reader does, so a standalone invocation is as strict as
+# the composed cron flow. Deliberately placed before any tmux call --
+# a misfiled note must never even create the `eip` session. The
+# configured slug is the same hardcoded value the reader uses (one
+# constant, duplicated rather than extracted, matching the reader's
+# own style).
+VIGIL_TASK_ASSIGNEE="samuel"
+if [[ "${VIGIL_FM[assignee]:-}" != "$VIGIL_TASK_ASSIGNEE" ]]; then
+	echo "vigil-task-spawn: $task_file: assignee mismatch" >&2
+	exit 1
+fi
+
 window_name="vigil-task-$id"
 
 # Resolve claude's absolute path in THIS process's own PATH, before
