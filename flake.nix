@@ -31,6 +31,7 @@
               pkgs.shellcheck
               pkgs.shfmt
               pkgs.tmux
+              pkgs.gh
             ];
           };
         }
