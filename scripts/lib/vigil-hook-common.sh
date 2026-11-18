@@ -64,3 +64,21 @@ vigil_hook_debug() {
 		echo "${0##*/}: $*" >&2
 	fi
 }
+
+# vigil_subagent_file <pane_id> — echoes the path of that pane's running-
+# subagent counter. Pane ids contain '%', which is awkward in filenames,
+# so it is flattened to "pct".
+vigil_subagent_file() {
+	local pane_id="$1"
+	printf '%s/subagents/%s' "$(vigil_runtime_dir)" "${pane_id//%/pct}"
+}
+
+# vigil_subagent_count <pane_id> — echoes the number of subagents currently
+# running in that pane (0 when the file is missing, unreadable, or holds
+# anything that isn't a non-negative integer). Never creates the file.
+vigil_subagent_count() {
+	local value
+	value="$(cat "$(vigil_subagent_file "$1")" 2>/dev/null || true)"
+	[[ "$value" =~ ^[0-9]+$ ]] || value=0
+	printf '%s' "$value"
+}

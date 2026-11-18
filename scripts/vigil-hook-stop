@@ -26,6 +26,8 @@ trap 'exit 0' TERM INT HUP
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+# shellcheck disable=SC1091
 source "$CURRENT_DIR/lib/vigil-hook-common.sh"
 
 json="$(vigil_hook_read_stdin)"
@@ -35,6 +37,17 @@ pane_id="$(vigil_hook_pane_id)" || {
     vigil_hook_debug "TMUX_PANE unset, no-op"
     exit 0
 }
+
+# Subagent guard: Stop also fires when the main thread yields to a running
+# subagent, which is not waiting on the user. Skip the enqueue while any
+# subagent is active -- the main thread's later Stop (after the subagent
+# finishes and the turn really ends) fires with the counter back at 0 and
+# enqueues then. Count is maintained by vigil-hook-subagent.
+subagents="$(vigil_subagent_count "$pane_id")"
+if [[ "$subagents" -gt 0 ]]; then
+    vigil_hook_debug "Stop with $subagents subagent(s) running, not enqueueing"
+    exit 0
+fi
 
 "$CURRENT_DIR/vigil-queue" enqueue "$pane_id" || vigil_hook_debug "enqueue failed (ignored, fail-open)"
 

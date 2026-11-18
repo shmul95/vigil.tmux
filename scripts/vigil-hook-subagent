@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# vigil-hook-subagent — Claude Code hook client that keeps a per-pane count
+# of subagents currently running. Usage: vigil-hook-subagent start|stop|reset
+#
+# Wired to three hook events:
+#   PreToolUse (matcher Task) -> start   a subagent was launched
+#   SubagentStop              -> stop    a subagent finished
+#   SessionStart              -> reset   clear stale state on a fresh session
+#
+# Why it exists: Claude Code fires Stop when the main thread yields, which
+# also happens while it is waiting on a running subagent. Without this
+# counter, vigil-hook-stop would enqueue the pane and pull the user back
+# for a session that is not actually waiting on them.
+#
+# Fail-open, like every other hook client: any internal failure exits 0 and
+# leaves the counter alone. A missing counter reads as 0, so the worst case
+# is the pre-existing behaviour (enqueue anyway), never a lost attention
+# signal.
+set -euo pipefail
+
+# Same fail-open contract as vigil-hook-stop (DETECT-05): internal aborts and
+# external signals must both surface as exit 0 to Claude Code.
+trap 'exit 0' EXIT
+trap 'exit 0' TERM INT HUP
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+# shellcheck disable=SC1091
+source "$CURRENT_DIR/lib/vigil-hook-common.sh"
+
+case "${1:-}" in
+start | stop | reset) ;;
+*)
+	echo "vigil-hook-subagent: expected start|stop|reset" >&2
+	exit 1
+	;;
+esac
+action="$1"
+
+# Consume stdin exactly once (Claude Code's hook contract delivers a JSON
+# payload; the counter itself doesn't need any field from it).
+vigil_hook_read_stdin >/dev/null 2>&1 || true
+
+pane_id="$(vigil_hook_pane_id)" || {
+	vigil_hook_debug "TMUX_PANE unset, no-op"
+	exit 0
+}
+
+file="$(vigil_subagent_file "$pane_id")"
+lockdir="$(dirname "$file")"
+mkdir -p "$lockdir" 2>/dev/null || {
+	vigil_hook_debug "cannot create $lockdir"
+	exit 0
+}
+
+# Serialise updates: two subagents can start or stop concurrently. 9 is the
+# same private FD convention vigil-common.sh uses for its own lock.
+exec 9>"$lockdir/.lock" 2>/dev/null || {
+	vigil_hook_debug "cannot open lock file"
+	exit 0
+}
+flock -x 9 2>/dev/null || true
+
+count="$(vigil_subagent_count "$pane_id")"
+
+case "$action" in
+start) count=$((count + 1)) ;;
+stop) [[ "$count" -gt 0 ]] && count=$((count - 1)) ;;
+reset) count=0 ;;
+esac
+
+printf '%s' "$count" >"$file" 2>/dev/null || vigil_hook_debug "cannot write $file"
+vigil_hook_debug "subagent $action -> count=$count (pane $pane_id)"
