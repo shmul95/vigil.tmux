@@ -68,6 +68,12 @@ render_usage() {
 	[[ "$output" == *'–/17%'* ]]
 }
 
+@test "RENDER-02: a stale Claude cache is marked the same way as DeepSeek" {
+	printf '%s\n' '{"claude":{"five_hour_pct":42,"seven_day_pct":17,"fetched_at":"2020-01-01T00:00:00Z","error":null}}' >"$CACHE"
+	run render_usage
+	[[ "$output" == *'~42%/17%'* ]]
+}
+
 @test "RENDER-01: the queue/auto segment is preserved and the usage segment appended" {
 	printf '%s\n' '{"deepseek":{"usd":"1.00","cny":"7.00","fetched_at":"2999-01-01T00:00:00Z","error":null}}' >"$CACHE"
 	run render_status

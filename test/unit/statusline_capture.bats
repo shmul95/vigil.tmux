@@ -73,6 +73,14 @@ EOF
 	[ "$status" -ne 0 ]
 }
 
+@test "CLAUDE-02: input without rate_limits drops a previously cached Claude entry" {
+	printf '%s\n' '{"claude":{"five_hour_pct":99,"seven_day_pct":88}}' >"$CACHE"
+	out="$(printf '%s' '{"session_id":"abc"}' | "$CAPTURE" "$WRAPPED")"
+	[ "$out" = "ORIGINAL-STATUS" ]
+	run jq -e 'has("claude")' "$CACHE"
+	[ "$status" -ne 0 ]
+}
+
 @test "REFRESH-02: capturing Claude preserves an existing deepseek entry" {
 	printf '%s\n' '{"deepseek":{"usd":"1.00","cny":"7.00"}}' >"$CACHE"
 	sample_stdin | "$CAPTURE" >/dev/null

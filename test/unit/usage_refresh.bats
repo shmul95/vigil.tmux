@@ -26,6 +26,24 @@ EOF
 	chmod +x "$STUB_DIR/bin/curl"
 	export CURL_CALLS_LOG="$STUB_DIR/calls.log"
 	: >"$CURL_CALLS_LOG"
+
+	# tmux stub: by default `list-sessions` FAILS, so the refresher's
+	# best-effort republish is a no-op and these tests can never touch a
+	# real tmux server. Tests that assert republish opt in explicitly.
+	cat >"$STUB_DIR/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TMUX_CALLS_LOG"
+case "$1" in
+list-sessions) exit "${TMUX_LIST_EXIT:-1}" ;;
+list-clients) printf '%s\n' "stub-client" ;;
+show-options) printf '%s\n' "${TMUX_AUTO:-off}" ;;
+*) exit 0 ;;
+esac
+EOF
+	chmod +x "$STUB_DIR/bin/tmux"
+	export TMUX_CALLS_LOG="$STUB_DIR/tmux.calls.log"
+	: >"$TMUX_CALLS_LOG"
+
 	export PATH="$STUB_DIR/bin:$PATH"
 	export DEEPSEEK_API_KEY="test-key-not-real"
 }
@@ -146,6 +164,47 @@ EOF
 	wait
 	run jq -e . "$CACHE"
 	[ "$status" -eq 0 ]
+}
+
+@test "DEEPSEEK-03: a structurally malformed 200 (no balance_infos) keeps prior values and records an error" {
+	stub_body <<'EOF'
+{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"9.99"}]}
+EOF
+	run "$REFRESH"
+	[ "$status" -eq 0 ]
+	[ "$(jq -r '.deepseek.usd' "$CACHE")" = "9.99" ]
+
+	stub_body <<'EOF'
+null
+EOF
+	run --separate-stderr "$REFRESH"
+	[ "$status" -eq 0 ]
+	[ "$(jq -r '.deepseek.usd' "$CACHE")" = "9.99" ]
+	run jq -r '.deepseek.error // empty' "$CACHE"
+	[[ "$output" == *"balance_infos"* ]]
+}
+
+@test "RENDER-01: a successful refresh republishes @vigil_status to reachable clients" {
+	export TMUX_LIST_EXIT=0
+	stub_body <<'EOF'
+{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"2.50"},{"currency":"CNY","total_balance":"18.00"}]}
+EOF
+	run "$REFRESH"
+	[ "$status" -eq 0 ]
+	run grep -c 'set-option -g @vigil_status' "$TMUX_CALLS_LOG"
+	[ "$output" -ge 1 ]
+	run grep -c 'refresh-client -S' "$TMUX_CALLS_LOG"
+	[ "$output" -ge 1 ]
+}
+
+@test "RENDER-01: with no reachable tmux server the refresh still succeeds silently" {
+	export TMUX_LIST_EXIT=1
+	stub_body <<'EOF'
+{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"18.00"}]}
+EOF
+	run --separate-stderr "$REFRESH"
+	[ "$status" -eq 0 ]
+	[ ! -s "$TMUX_CALLS_LOG" ] || ! grep -q 'set-option -g @vigil_status' "$TMUX_CALLS_LOG"
 }
 
 @test "REFRESH-01: no partial cache file is left behind after a successful run" {

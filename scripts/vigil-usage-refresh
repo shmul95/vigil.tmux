@@ -68,6 +68,15 @@ refresh_deepseek() {
 		return 0
 	fi
 
+	# A structurally malformed 200 body (valid JSON but no
+	# `balance_infos` array) must be an ERROR, not a success that
+	# clears the last-good values. Check the shape before selecting.
+	if ! jq -e '(.balance_infos | type) == "array"' >/dev/null 2>&1 <<<"$body"; then
+		echo "vigil-usage-refresh: deepseek response missing balance_infos" >&2
+		record_error deepseek "malformed response (no balance_infos)"
+		return 0
+	fi
+
 	# Select currencies by the `currency` field, never by array index:
 	# the array order is not guaranteed and USD may be absent entirely.
 	# Amounts stay strings (the API sends strings; converting to floats
@@ -89,6 +98,29 @@ refresh_deepseek() {
 	atomic_write "$new"
 }
 
+# Best-effort republish after new data lands (RENDER-01). The timer runs
+# outside tmux, so vigil_publish_state's $TMUX guard does not apply here;
+# instead we reach the default tmux server directly (works from cron for
+# a single-user default socket). Every step is best-effort: no server,
+# no client, or a failed call never fails the refresh.
+republish() {
+	command -v tmux >/dev/null 2>&1 || return 0
+	tmux list-sessions >/dev/null 2>&1 || return 0
+
+	local count auto status client
+	count="$(vigil_read_queue_count)"
+	auto="$(tmux show-options -gv @vigil_auto 2>/dev/null || true)"
+	[[ "$auto" == "on" ]] || auto="off"
+	status="$(vigil_render_status "$count" "$auto")"
+	tmux set-option -g @vigil_status "$status" >/dev/null 2>&1 || true
+	while IFS= read -r client; do
+		[[ -n "$client" ]] || continue
+		tmux refresh-client -S -t "$client" >/dev/null 2>&1 || true
+	done < <(tmux list-clients -F '#{client_name}' 2>/dev/null || true)
+	return 0
+}
+
 refresh_deepseek
+republish
 
 exit 0

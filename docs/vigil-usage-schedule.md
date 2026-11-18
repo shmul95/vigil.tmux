@@ -76,6 +76,20 @@ does not catch up.
 stored in the cache and the segment shows a `!` marker. Check
 `journalctl --user -u vigil-usage-refresh` if the marker appears.
 
+**Environment notes**
+- Use a **systemd user** unit (as above), not a system unit: the cache path
+  is `$XDG_RUNTIME_DIR/vigil-usage-<uid>.json`, and the user manager sets
+  `XDG_RUNTIME_DIR` for you. A system/cron invocation without it would
+  fall back to `/tmp` and write a different file than the in-tmux renderer
+  reads.
+- `curl`, `jq`, and `flock` (util-linux) must be on the unit's PATH.
+  `systemctl --user show-environment` shows what it inherits; add
+  `Environment=PATH=...` if your Nix profile tools are not visible there.
+- After a successful refresh the script republishes `@vigil_status`
+  best-effort by talking to the default tmux socket, so the balance moves
+  without waiting for a queue event. If you run tmux on a non-default
+  socket, the next queue change or `vigil-publish` will refresh it.
+
 ---
 
 ## Step 2 — Claude usage via the statusline wrapper
@@ -117,7 +131,13 @@ that file.
   and the segment simply omits Claude.
 - Claude Code drops each window after it resets; the wrapper stores the
   missing window as `null`, and the segment renders `–` rather than a
-  stale number.
+  stale number. If the input has no `rate_limits` object at all (e.g. a
+  non-subscriber plan), any previously cached Claude entry is dropped.
+- Percentages older than 45 minutes render with a `~` marker, exactly
+  like a stale DeepSeek balance.
+- The status-right segment is variable-length. If your `status-right`
+  is very long, the segment can be truncated by tmux's
+  `status-right-length`; raise it in your tmux config if needed.
 - The wrapper never refreshes tokens, never reads credential files, and
   makes no network calls.
 

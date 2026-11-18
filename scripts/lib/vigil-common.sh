@@ -369,11 +369,12 @@ vigil_usage_segment() {
 		  (.deepseek.fetched_at // ""),
 		  (.claude.five_hour_pct // ""),
 		  (.claude.seven_day_pct // ""),
-		  (.claude.error // "") ] | map(tostring) | join("\u001f")
+		  (.claude.error // ""),
+		  (.claude.fetched_at // "") ] | map(tostring) | join("\u001f")
 	' "$cache" 2>/dev/null)" || return 0
 
-	local ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err
-	IFS=$'\x1f' read -r ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err <<<"$fields"
+	local ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err cl_at
+	IFS=$'\x1f' read -r ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err cl_at <<<"$fields"
 
 	local out="" ds="" marker="" age
 	if [[ -n "$ds_err" ]]; then
@@ -394,13 +395,23 @@ vigil_usage_segment() {
 		out="#[fg=#4d6bfe]${ds}#[default]"
 	fi
 
-	local cl="" cl5s="" cl7s=""
+	local cl="" cl5s="" cl7s="" cl_marker="" cl_age
 	if [[ -n "$cl_err" ]]; then
 		cl="!CL"
 	elif [[ -n "$cl5" || -n "$cl7" ]]; then
+		# Claude's cache is refreshed by the statusline wrapper rather
+		# than the timer; if the user has not used Claude for a while the
+		# cached percentages are stale. Mark them the same way (~).
+		if [[ -n "$cl_at" ]]; then
+			cl_age="$(jq -rn --arg t "$cl_at" --argjson now "$now" \
+				'($now - ($t | fromdateiso8601))' 2>/dev/null || printf '0')"
+			if [[ "$cl_age" =~ ^[0-9]+$ ]] && ((cl_age > 2700)); then
+				cl_marker="~"
+			fi
+		fi
 		[[ -n "$cl5" ]] && cl5s="${cl5}%"
 		[[ -n "$cl7" ]] && cl7s="${cl7}%"
-		cl="${cl5s:-–}/${cl7s:-–}"
+		cl="${cl_marker}${cl5s:-–}/${cl7s:-–}"
 	fi
 	if [[ -n "$cl" ]]; then
 		out="${out:+$out }#[fg=#d97757]${cl}#[default]"
