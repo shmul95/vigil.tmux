@@ -119,7 +119,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 
 	esc=$'\x1b'
-	payload="${esc}]99;i=vigil-%7;a=focus;Vigil: a session needs you${esc}\\"
+	payload="${esc}]99;i=vigil-%7:a=focus;Vigil: a session needs you${esc}\\"
 	expected="${esc}Ptmux;${payload//$esc/$esc$esc}${esc}\\"
 	[ "$(cat "$FAKE_PANE_TTY")" = "$expected" ]
 }
