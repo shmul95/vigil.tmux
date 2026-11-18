@@ -102,7 +102,11 @@ cmd_pull() {
 
 	local esc payload dcs
 	esc=$'\x1b'
-	payload="${esc}]99;i=vigil-${pane_id};a=focus;Vigil: a session needs you${esc}\\"
+	# OSC 99 shapes metadata as colon-separated key=value pairs, then a single
+	# `;` before the notification body. Using `;` between the metadata fields
+	# (the earlier form) makes kitty read everything after the first `;` as
+	# the body, so the notification renders as literal "a=focus;Vigil: ...".
+	payload="${esc}]99;i=vigil-${pane_id}:a=focus;Vigil: a session needs you${esc}\\"
 	dcs="${esc}Ptmux;${payload//$esc/$esc$esc}${esc}\\"
 	printf '%s' "$dcs" >"$pane_tty" 2>/dev/null || true
 }
