@@ -102,6 +102,19 @@ make_tasks_dir() {
 	[[ "$stderr" == *"assignee"* ]]
 }
 
+@test "missing field (missing-created.md) is logged to stderr and skipped, valid-open.md still appears" {
+	local dir
+	dir="$(make_tasks_dir valid-open.md missing-created.md)"
+	export VIGIL_TASKS_DIR="$dir"
+	run --separate-stderr vigil-task-reader
+	[ "$status" -eq 0 ]
+	[ "$output" = "${dir}/valid-open.md" ]
+	[[ "$stderr" == *"missing-created.md"* ]]
+	# Exact reason, not just the substring "created" (which the fixture
+	# filename alone would satisfy).
+	[[ "$stderr" == *"missing field 'created'"* ]]
+}
+
 @test "unparseable frontmatter (unparseable-no-close.md) is logged to stderr and skipped, valid-open.md still appears" {
 	local dir
 	dir="$(make_tasks_dir valid-open.md unparseable-no-close.md)"

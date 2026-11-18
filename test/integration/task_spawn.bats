@@ -5,6 +5,8 @@
 # integration_helper.bash) -- the real binary requires interactive
 # auth and must never be invoked by this suite.
 
+bats_require_minimum_version 1.5.0
+
 load '../test_helper'
 load 'integration_helper'
 
@@ -123,4 +125,14 @@ teardown() {
 
 	active_after="$(tmux display-message -p -t eip '#{window_name}')"
 	[ "$active_after" = "$active_before" ]
+}
+
+@test "DEBT-02: standalone spawn rejects a note whose assignee mismatches the configured slug (nonzero exit, stderr reason, no window)" {
+	run --separate-stderr vigil-task-spawn "$FIXTURE_DIR/mismatched-assignee.md"
+	[ "$status" -eq 1 ]
+	[[ "$stderr" == *"assignee mismatch"* ]]
+	# fixed reason only -- the actual untrusted value is never echoed
+	[[ "$stderr" != *"bob"* ]]
+	run tmux has-session -t eip
+	[ "$status" -ne 0 ]
 }
