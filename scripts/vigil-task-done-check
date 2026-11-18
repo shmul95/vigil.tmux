@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# vigil-task-done-check <task_file> — DONE-01/DONE-02: given one
+# task note's absolute file path, checks whether a merged GitHub PR
+# in the EIP-memtide org already references this task's own id
+# (exact 14-digit substring match in the PR's title or body) -- if
+# so, this task is treated as already complete and spawning should
+# be skipped on this and all subsequent runs.
+#
+# No LLM judgment call is made here (09-CONTEXT.md "Resolving a
+# real design tension..."): Vigil's own cron path has no model call
+# anywhere in it, so the match signal is necessarily the task's own
+# deliberately-embedded id string, not a free-text judgment of
+# "plausible relatedness" the way reminder-sweep's own LLM-driven
+# evidence-check step works.
+#
+# Exit code IS the control-flow signal Phase 10 composes against:
+#   0 = not confirmed done -> proceed to spawn eligibility
+#   1 = confirmed done (matching merged PR found) -> skip spawning
+# Never the reverse. Stdout is exactly one line either way.
+#
+# Single-task operation, same CLI shape as vigil-task-spawn (Phase
+# 8): does not loop over a directory itself -- Phase 10's cron
+# packaging composes this with vigil-task-reader's output, one
+# invocation per open task file.
+#
+# gh failures (auth/network/rate-limit -- never "zero results") are
+# fail-open: logged distinctly to stderr, treated as "not done" so
+# a broken check never blocks spawning (09-CONTEXT.md "GitHub
+# Query"). "gh succeeded, zero matches" and "gh itself failed" are
+# distinguished ONLY by the captured exit code, never by output
+# emptiness (09-RESEARCH.md Pitfall 3) -- both can produce
+# near-empty output.
+#
+# DONE-02: this script never opens any file for writing except a
+# mktemp-created scratch file for gh's own stderr capture. It only
+# READS task_file (via vigil_frontmatter_parse) and talks to `gh` --
+# no redirect anywhere touches a vault path.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-frontmatter.sh"
+
+task_file="${1:-}"
+if [[ -z "$task_file" ]]; then
+	echo "usage: vigil-task-done-check <task_file>" >&2
+	exit 1
+fi
+
+# Re-derive id/created independently from the task file itself
+# rather than trusting a caller-supplied value -- same convention
+# as vigil-task-spawn's own re-derivation (08-CONTEXT.md "Identity
+# & Window Naming"), keeping this script correct and testable
+# standalone.
+if ! vigil_frontmatter_parse "$task_file"; then
+	echo "vigil-task-done-check: $task_file: unparseable frontmatter" >&2
+	exit 1
+fi
+
+id="${VIGIL_FM[id]:-}"
+# Same shape gate as vigil-task-spawn's own id validation -- a
+# missing/malformed id must never flow into the jq expression or
+# the stdout contract below.
+if [[ ! "$id" =~ ^[0-9]{14}$ ]]; then
+	echo "vigil-task-done-check: $task_file: id field is not a 14-digit timestamp" >&2
+	exit 1
+fi
+
+# created is passed through to `gh --updated` UNTRANSFORMED, in
+# whatever shape it arrives (bare YYYY-MM-DD or full ISO-8601
+# datetime both live-verified to work -- 09-RESEARCH.md Pitfall 1).
+# A missing/empty created needs NO special-case code here: it
+# flows into the --updated flag as-is, gh's own date parser rejects
+# it cleanly (non-zero exit), and that is routed through the exact
+# same fail-open branch as any other gh failure below
+# (09-RESEARCH.md Pitfall 2 -- deliberately no
+# `if [[ -z "$created" ]]` branch).
+created="${VIGIL_FM[created]:-}"
+
+# id is already shape-validated above as ^[0-9]{14}$ -- a digit-only
+# string cannot contain '"', a backtick, '$(', or any character that
+# could break out of the double-quoted jq string literal below, so
+# this interpolation is safe (09-CONTEXT.md security note).
+jq_expr="map(select((.title + \" \" + (.body // \"\")) | contains(\"$id\"))) | .[0]"
+
+# created is placed inside the --updated flag's VALUE, a separate
+# argv element from the --jq expression string above. Bash performs
+# exactly one substitution pass on this literal double-quoted
+# string at parse time, so a malformed created value is never
+# re-interpreted as shell syntax -- at worst it makes gh's own date
+# parser fail cleanly, which the fail-open branch below already
+# handles.
+err_file="$(mktemp)"
+if ! out="$(gh search prs --owner EIP-memtide --merged \
+	--updated ">=$created" \
+	--sort updated --order desc \
+	--json number,title,body,url,repository \
+	--jq "$jq_expr" 2>"$err_file")"; then
+	reason="$(head -1 "$err_file")"
+	rm -f "$err_file"
+	echo "vigil-task-done-check: evidence check failed: gh error ($reason)" >&2
+	echo "not done: vigil-task-$id"
+	exit 0
+fi
+rm -f "$err_file"
+
+# The locked query's own trailing "| .[0]" already resolves "which
+# PR if multiple match" deterministically (--sort updated --order
+# desc, most-recently-updated first) -- this script never re-picks
+# among candidates itself. $out is either the literal string "null"
+# (no match) or a single JSON object; `jq -r '.number // empty'`
+# distinguishes the two without this script needing its own
+# JSON-array parsing (standalone `jq`, already in flake.nix's
+# devShell, used here only for this trivial extraction step --
+# 09-RESEARCH.md "Alternatives Considered").
+pr_number="$(jq -r '.number // empty' <<<"$out" 2>/dev/null || true)"
+if [[ -z "$pr_number" ]]; then
+	echo "not done: vigil-task-$id"
+	exit 0
+fi
+pr_url="$(jq -r '.url // empty' <<<"$out")"
+echo "done: vigil-task-$id (merged PR #$pr_number: $pr_url)"
+exit 1
