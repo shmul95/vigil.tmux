@@ -59,6 +59,30 @@ WantedBy=timers.target
 DEEPSEEK_API_KEY=sk-...
 ```
 
+### If the key already lives in agenix (e.g. the `deepcode` env file)
+
+Don't copy the raw key. Point the unit at the same decrypted file and map
+the variable at runtime:
+
+```ini
+EnvironmentFile=%t/agenix/deepcode-env
+ExecStart=/bin/sh -c 'DEEPSEEK_API_KEY="$ANTHROPIC_API_KEY" exec %h/Repositories/vigil/scripts/vigil-usage-refresh'
+```
+
+(`%t` is the per-user runtime dir; agenix keeps the file 0600 there.)
+
+Note the coupling: `ANTHROPIC_API_KEY` is only the DeepSeek key while
+`deepcode` is DeepSeek-backed. If that ever changes, add an explicit
+`DEEPSEEK_API_KEY=` line to the agenix secret source and use the plain
+`EnvironmentFile` form instead.
+
+One-off run without writing anything:
+
+```bash
+set -a; . "${XDG_RUNTIME_DIR}/agenix/deepcode-env"; set +a
+DEEPSEEK_API_KEY="$ANTHROPIC_API_KEY" /path/to/scripts/vigil-usage-refresh
+```
+
 Enable:
 
 ```bash
