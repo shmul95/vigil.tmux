@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# vigil-task-cron — CRON-01/CRON-02: the complete scheduled entry point.
+# Runs vigil-task-reader, then for each open task runs
+# vigil-task-done-check and (unless done) vigil-task-spawn, passing
+# their stdout through verbatim and printing one final summary line.
+# Always exits 0 (fail-open); never registers its own schedule.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+reader="$CURRENT_DIR/vigil-task-reader"
+done_check="$CURRENT_DIR/vigil-task-done-check"
+spawn="$CURRENT_DIR/vigil-task-spawn"
+
+tasks_found=0 spawned=0 running=0 done=0 errors=0
+
+# jq is required by vigil-task-done-check's final extraction step. A
+# scheduled run has a much shorter PATH than an interactive shell, and
+# jq is not always present there. Missing jq silently disables
+# completion detection (every check degrades to "not done"), so warn
+# loudly and count it as an error, but keep running -- spawning still
+# works. Fail-open, but never silent.
+if ! command -v jq >/dev/null 2>&1; then
+	echo "vigil-task-cron: warning: jq not found -- completion detection disabled" >&2
+	errors=$((errors + 1))
+fi
+
+# (1) Reader. Its contract says exit 0 always, but defend anyway: a
+# non-zero reader is an error, still summarised, exit stays 0.
+reader_rc=0
+reader_out="$("$reader")" || reader_rc=$?
+if ((reader_rc != 0)); then
+	echo "vigil-task-cron: vigil-task-reader failed (exit $reader_rc)" >&2
+	errors=$((errors + 1))
+	reader_out=""
+fi
+
+while IFS= read -r task_file; do
+	if [[ -z "$task_file" ]]; then
+		continue
+	fi
+	tasks_found=$((tasks_found + 1))
+
+	# (2) Completion check. Exit 1 is overloaded: it means "done" on a
+	# successful run but also occurs on internal errors with empty
+	# stdout. Disambiguate by stdout prefix, never by exit code alone.
+	dc_rc=0
+	dc_out="$("$done_check" "$task_file")" || dc_rc=$?
+	if [[ -n "$dc_out" ]]; then
+		printf '%s\n' "$dc_out"
+	fi
+
+	if ((dc_rc == 0)); then
+		# (3) Spawn. Exit 0 means spawned or skipped; non-zero is an
+		# error. Classify the outcome from the locked stdout prefix.
+		sp_rc=0
+		sp_out="$("$spawn" "$task_file")" || sp_rc=$?
+		if [[ -n "$sp_out" ]]; then
+			printf '%s\n' "$sp_out"
+		fi
+		if ((sp_rc != 0)); then
+			errors=$((errors + 1))
+		else
+			case "$sp_out" in
+			spawned:*) spawned=$((spawned + 1)) ;;
+			skipped:*) running=$((running + 1)) ;;
+			*) errors=$((errors + 1)) ;;
+			esac
+		fi
+	elif [[ "$dc_out" == done:* ]]; then
+		done=$((done + 1))
+	else
+		errors=$((errors + 1))
+	fi
+done <<<"$reader_out"
+
+printf 'vigil-task-cron: %d tasks found, %d spawned, %d already running, %d done (PR merged), %d errors\n' \
+	"$tasks_found" "$spawned" "$running" "$done" "$errors"
+exit 0
