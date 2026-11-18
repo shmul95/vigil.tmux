@@ -103,3 +103,42 @@ vigil_test_detach_client() {
 	fi
 	unset VIGIL_TEST_CLIENT_FIFO
 }
+
+# vigil_test_stub_claude — creates a stub "claude" binary that logs
+# its full argv (one invocation per line) to
+# $VIGIL_TEST_CLAUDE_LOG and then sleeps indefinitely (mirrors a
+# real, long-running Claude Code session so the spawned tmux window
+# stays alive for the remainder of the test -- a stub that exits
+# immediately would let tmux close/remove the window before a test
+# can assert against it, per `remain-on-exit`'s default-off
+# behavior). Exports VIGIL_CLAUDE_BIN to the stub's own absolute
+# path -- NOT a PATH prepend -- so vigil-task-spawn's own
+# `command -v "${VIGIL_CLAUDE_BIN:-claude}"` resolution (run in the
+# SCRIPT's process, never the tmux server's environment snapshot,
+# 08-RESEARCH.md Pitfall 2) finds it directly regardless of when
+# the disposable server was started relative to this export. The
+# real `claude` binary requires interactive auth and is long-running
+# -- it must never be invoked by this suite.
+vigil_test_stub_claude() {
+	VIGIL_TEST_CLAUDE_DIR="$(mktemp -d)"
+	VIGIL_TEST_CLAUDE_LOG="$VIGIL_TEST_CLAUDE_DIR/invocations.log"
+	: >"$VIGIL_TEST_CLAUDE_LOG"
+	cat >"$VIGIL_TEST_CLAUDE_DIR/claude" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$VIGIL_TEST_CLAUDE_LOG"
+exec sleep 86400
+STUB
+	chmod +x "$VIGIL_TEST_CLAUDE_DIR/claude"
+	export VIGIL_CLAUDE_BIN="$VIGIL_TEST_CLAUDE_DIR/claude"
+	export VIGIL_TEST_CLAUDE_LOG
+}
+
+# vigil_test_stub_claude_cleanup — removes the stub directory and
+# log created by vigil_test_stub_claude. Safe to call even if that
+# was never invoked.
+vigil_test_stub_claude_cleanup() {
+	if [[ -n "${VIGIL_TEST_CLAUDE_DIR:-}" ]]; then
+		rm -rf "$VIGIL_TEST_CLAUDE_DIR"
+	fi
+	unset VIGIL_CLAUDE_BIN VIGIL_TEST_CLAUDE_DIR VIGIL_TEST_CLAUDE_LOG
+}

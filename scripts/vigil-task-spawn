@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# vigil-task-spawn <task_file> — DEDUP-01/DEDUP-02/SPAWN-01/SPAWN-02:
+# given one task note's absolute file path (already produced by
+# vigil-task-reader), spawns a tmux window + `claude` session inside
+# a managed `eip` tmux session for it, unless a window with that
+# task's deterministic name already exists -- exact tmux window-name
+# existence is the sole liveness/dedup signal (no daemon, no
+# persisted state file). Single-task operation: does not loop over a
+# directory itself (08-CONTEXT.md "CLI Shape") -- Phase 10's cron
+# packaging composes this with vigil-task-reader's own output, one
+# invocation per line.
+#
+# Idempotent: running this twice against the same task_file produces
+# exactly one window, not two (DEDUP-01's own success criterion) --
+# T-08-02 below is why a tmux `-t` target probe cannot be used for
+# this check; only explicit `list-windows` enumeration + exact
+# string comparison is correct (08-RESEARCH.md Pitfall 1 and Pitfall
+# 5: tmux itself does NOT reject a duplicate window name, so the
+# dedup check here is the entire guarantee, not a backstop on top of
+# one).
+#
+# Deliberately does NOT source vigil-common.sh or guard on
+# vigil_in_tmux: this script must work correctly with $TMUX unset
+# (every cron invocation, Phase 10) -- plain `tmux` calls with no
+# -L/-S flag correctly resolve to the default socket regardless
+# (08-RESEARCH.md Pitfall 4).
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-frontmatter.sh"
+
+task_file="${1:-}"
+if [[ -z "$task_file" ]]; then
+	echo "usage: vigil-task-spawn <task_file>" >&2
+	exit 1
+fi
+
+# Re-derive `id` independently from the task file itself rather than
+# trusting a caller-supplied value (08-CONTEXT.md "Identity & Window
+# Naming") -- keeps this script correct and testable standalone, not
+# dependent on vigil-task-reader having already validated anything.
+if ! vigil_frontmatter_parse "$task_file"; then
+	echo "vigil-task-spawn: $task_file: unparseable frontmatter" >&2
+	exit 1
+fi
+
+id="${VIGIL_FM[id]:-}"
+# Same shape gate as vigil-task-reader's own T-07-07 fix (14-digit
+# timestamp) -- a missing or malformed id here must never silently
+# flow into the window name (T-08-05: it could otherwise produce an
+# ambiguous/empty "vigil-task-" name or corrupt the exact-match
+# comparison below).
+if [[ ! "$id" =~ ^[0-9]{14}$ ]]; then
+	echo "vigil-task-spawn: $task_file: id field is not a 14-digit timestamp" >&2
+	exit 1
+fi
+
+window_name="vigil-task-$id"
+
+# Resolve claude's absolute path in THIS process's own PATH, before
+# ever touching tmux (08-RESEARCH.md Pitfall 2): a spawned window's
+# shell inherits the tmux SERVER's environment snapshot from when
+# the server first started, not the PATH of whatever client later
+# issues new-session/new-window -- a bare "claude" word in the
+# command string would silently resolve to whatever the server saw
+# at startup, breaking both test-stubbing and any later PATH
+# change. VIGIL_CLAUDE_BIN is a test seam only (T-08-03, accepted:
+# never exposed to an untrusted caller in the real cron invocation).
+claude_bin="$(command -v "${VIGIL_CLAUDE_BIN:-claude}")" || {
+	echo "vigil-task-spawn: claude binary not found on PATH" >&2
+	exit 1
+}
+
+# T-08-01 mitigation: printf '%q' on the FULL argument before
+# embedding it in the command string handed to tmux, which itself
+# re-parses that string through a second shell layer ($SHELL -c)
+# when the window starts -- a naive double-quote interpolation
+# breaks (and is injectable) the moment task_file contains a
+# literal '"', '`', '$()', ';', or "'" (08-RESEARCH.md Pitfall 3,
+# verified directly). Do not hand-roll this escaping.
+arg="$(printf '%q' "/thinking-partner @${task_file}")"
+cmd="$claude_bin $arg"
+
+# DEDUP-02: create `eip` if it doesn't exist yet, rather than
+# failing. Both branches construct the identical window_name + cmd;
+# only the tmux subcommand differs (08-CONTEXT.md "eip Session
+# Lifecycle").
+if tmux has-session -t eip 2>/dev/null; then
+	# T-08-02 mitigation: exact-match via explicit enumeration,
+	# NEVER a `-t "eip:$window_name"` target probe -- tmux's own
+	# target resolution does prefix/glob matching, not exact
+	# matching (08-RESEARCH.md Pattern 2/Pitfall 1), so a probe
+	# would produce false positives against ids that share a
+	# numeric prefix (task ids are 14-digit timestamps, and later
+	# ids routinely share long prefixes with earlier ones).
+	existing="$(tmux list-windows -t eip -F '#{window_name}' 2>/dev/null || true)"
+	if grep -Fxq "$window_name" <<<"$existing"; then
+		echo "skipped: $window_name (already running)"
+		exit 0
+	fi
+	# -d: don't steal focus from a human who might be attached to
+	# eip (08-RESEARCH.md Pattern 3 -- the new-session branch below
+	# already has -d per the original locked decision; new-window
+	# needs it added explicitly).
+	tmux new-window -d -t eip -n "$window_name" "$cmd"
+else
+	tmux new-session -d -s eip -n "$window_name" "$cmd"
+fi
+
+echo "spawned: $window_name (window created in eip)"
+exit 0
