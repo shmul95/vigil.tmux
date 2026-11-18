@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# vigil-statusline-capture — CLAUDE-01/CLAUDE-02 (v1.2).
+# Wraps an existing Claude Code statusLine command: reads the documented
+# statusline stdin JSON, caches `.rate_limits` (five_hour / seven_day
+# used_percentage + resets_at) for the usage segment, then feeds the
+# SAME bytes to the wrapped command and returns its output and exit
+# status unchanged.
+#
+# Deliberately does NOT use `set -e`: a statusline wrapper must never
+# break the user's statusline. Any internal failure degrades to a pure
+# passthrough.
+#
+# stdin is spooled to a temp file rather than captured with `$(cat)`,
+# because command substitution strips trailing newlines and would make
+# the passthrough not byte-identical.
+#
+# Usage (in settings.json statusLine.command):
+#   /path/to/vigil-statusline-capture <existing-statusline-command...>
+set -uo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+
+input_file="$(mktemp)" || exit 0
+trap 'rm -f "$input_file"' EXIT
+cat >"$input_file" || true
+
+cache_claude_rates() {
+	command -v jq >/dev/null 2>&1 || return 0
+	jq -e '.rate_limits' "$input_file" >/dev/null 2>&1 || return 0
+
+	local cache now cl old old_cmp new_cmp merged tmp
+	cache="$(vigil_usage_cache_file)"
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+	cl="$(jq -c --arg now "$now" '
+		{five_hour_pct: (.rate_limits.five_hour.used_percentage // null),
+		 seven_day_pct: (.rate_limits.seven_day.used_percentage // null),
+		 five_hour_resets_at: (.rate_limits.five_hour.resets_at // null),
+		 seven_day_resets_at: (.rate_limits.seven_day.resets_at // null),
+		 fetched_at: $now,
+		 error: null}
+	' "$input_file" 2>/dev/null)" || return 0
+	[[ -n "$cl" ]] || return 0
+
+	old="{}"
+	if [[ -s "$cache" ]] && jq -e . "$cache" >/dev/null 2>&1; then
+		old="$(cat "$cache")"
+	fi
+
+	# Throttle: the statusline can run many times per minute. `fetched_at`
+	# is excluded from the comparison, so an unchanged reading writes
+	# nothing (CLAUDE-02).
+	new_cmp="$(jq -c 'del(.fetched_at)' <<<"$cl")"
+	old_cmp="$(jq -c '.claude // null | if . == null then null else del(.fetched_at) end' <<<"$old")"
+	[[ "$new_cmp" == "$old_cmp" ]] && return 0
+
+	merged="$(jq -c --argjson c "$cl" '.claude = $c' <<<"$old")" || return 0
+	mkdir -p "$(dirname "$cache")" 2>/dev/null || return 0
+	tmp="$cache.tmp.$$"
+	printf '%s\n' "$merged" >"$tmp" 2>/dev/null || return 0
+	mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+	return 0
+}
+
+cache_claude_rates
+
+if (($#)); then
+	cat "$input_file" | "$@"
+	exit $?
+fi
+
+exit 0
