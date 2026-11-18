@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# vigil-usage-refresh — DEEPSEEK-01/DEEPSEEK-03/REFRESH-01.
+# Fetches provider usage/balance into a single cache file that the status
+# renderer reads without ever touching the network. Designed for a
+# 15-minute timer (activation is a separate human step). Fail-open: any
+# failure leaves the previous provider values intact, records the reason
+# in the cache, and still exits 0.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091 # dynamic, self-locating path; not statically resolvable
+source "$CURRENT_DIR/lib/vigil-common.sh"
+
+cache_dir="$(vigil_runtime_dir)"
+mkdir -p "$cache_dir"
+cache="$cache_dir/usage-cache.json"
+lock="$cache_dir/usage-cache.lock"
+
+# Serialize concurrent refreshes: the read-modify-write below must not
+# interleave two runs (REFRESH-01). flock is provided by util-linux, an
+# existing devShell dependency.
+exec 9>"$lock"
+flock 9
+
+old_cache() {
+	if [[ -s "$cache" ]] && jq -e . "$cache" >/dev/null 2>&1; then
+		cat "$cache"
+	else
+		printf '{}'
+	fi
+}
+
+atomic_write() {
+	local payload="$1" tmp
+	tmp="$cache.tmp.$$"
+	printf '%s\n' "$payload" >"$tmp"
+	mv -f "$tmp" "$cache"
+}
+
+# Keep whatever was cached for this provider, recording only the error
+# field. A provider with no prior entry gets a minimal {error} object.
+record_error() {
+	local provider="$1" msg="$2" old new
+	old="$(old_cache)"
+	if jq -e --arg p "$provider" 'has($p)' >/dev/null 2>&1 <<<"$old"; then
+		new="$(jq -c --arg p "$provider" --arg e "$msg" '.[$p].error = $e' <<<"$old")"
+	else
+		new="$(jq -c --arg p "$provider" --arg e "$msg" '. + {($p): {error: $e}}' <<<"$old")"
+	fi
+	atomic_write "$new"
+}
+
+refresh_deepseek() {
+	local key="${DEEPSEEK_API_KEY:-}" now body rc=0 ds
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+	if [[ -z "$key" ]]; then
+		echo "vigil-usage-refresh: DEEPSEEK_API_KEY not set" >&2
+		record_error deepseek "DEEPSEEK_API_KEY not set"
+		return 0
+	fi
+
+	body="$(curl -fsS --max-time 10 -H "Authorization: Bearer $key" \
+		https://api.deepseek.com/user/balance)" || rc=$?
+	if ((rc != 0)); then
+		echo "vigil-usage-refresh: deepseek fetch failed (curl exit $rc)" >&2
+		record_error deepseek "fetch failed (exit $rc)"
+		return 0
+	fi
+
+	# Select currencies by the `currency` field, never by array index:
+	# the array order is not guaranteed and USD may be absent entirely.
+	# Amounts stay strings (the API sends strings; converting to floats
+	# would silently round them).
+	if ! ds="$(jq -c --arg now "$now" '
+		{usd: ([.balance_infos[]? | select(.currency == "USD") | .total_balance][0] // null),
+		 cny: ([.balance_infos[]? | select(.currency == "CNY") | .total_balance][0] // null),
+		 fetched_at: $now,
+		 error: null}
+	' <<<"$body" 2>/dev/null)"; then
+		echo "vigil-usage-refresh: deepseek response was malformed" >&2
+		record_error deepseek "malformed response"
+		return 0
+	fi
+
+	local old new
+	old="$(old_cache)"
+	new="$(jq -c --argjson ds "$ds" '.deepseek = $ds' <<<"$old")"
+	atomic_write "$new"
+}
+
+refresh_deepseek
+
+exit 0
