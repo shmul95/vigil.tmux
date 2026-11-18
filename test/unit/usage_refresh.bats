@@ -12,6 +12,7 @@ REFRESH="$BATS_TEST_DIRNAME/../../scripts/vigil-usage-refresh"
 setup() {
 	export VIGIL_RUNTIME_DIR="$(mktemp -d)"
 	CACHE="$VIGIL_RUNTIME_DIR/usage-cache.json"
+	export VIGIL_USAGE_CACHE="$CACHE"
 	STUB_DIR="$(mktemp -d)"
 	mkdir -p "$STUB_DIR/bin"
 	cat >"$STUB_DIR/bin/curl" <<'EOF'

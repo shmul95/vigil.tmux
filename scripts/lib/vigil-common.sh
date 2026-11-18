@@ -70,6 +70,21 @@ vigil_runtime_dir() {
 	printf '%s/vigil/%s' "$base" "$socket_name"
 }
 
+# vigil_usage_cache_file — echoes the usage/balance cache path (v1.2).
+#
+# Deliberately NOT scoped to a tmux socket: the cache is written by a
+# systemd timer (which runs with no $TMUX and therefore resolves a
+# different socket name) and read by the renderer inside tmux. Both must
+# agree, so this is a single per-UID path under $XDG_RUNTIME_DIR.
+# VIGIL_USAGE_CACHE is the test/config seam.
+vigil_usage_cache_file() {
+	if [[ -n "${VIGIL_USAGE_CACHE:-}" ]]; then
+		printf '%s' "$VIGIL_USAGE_CACHE"
+		return
+	fi
+	printf '%s/vigil-usage-%s.json' "${XDG_RUNTIME_DIR:-/tmp}" "$(id -u)"
+}
+
 # vigil_queue_file — echoes the path to this runtime dir's queue.json.
 vigil_queue_file() {
 	printf '%s/queue.json' "$(vigil_runtime_dir)"
@@ -331,15 +346,84 @@ vigil_read_queue_count() {
 	printf '%s' "$count"
 }
 
+# vigil_usage_segment — render the cached provider usage/balance (v1.2).
+# Cache-only: NEVER performs network I/O (RENDER-02), so it is safe on
+# every status redraw. Prints nothing when the cache is absent, empty,
+# or unreadable. Fixed provider colors identify each entry; no name text.
+# DeepSeek #4d6bfe, Claude #d97757.
+# Markers: "!" = the last refresh failed, "~" = cache older than 45 min.
+vigil_usage_segment() {
+	local cache now fields
+	cache="$(vigil_usage_cache_file)"
+	[[ -s "$cache" ]] || return 0
+	command -v jq >/dev/null 2>&1 || return 0
+
+	now="$(date +%s)"
+	# Read every field in one jq pass. The separator is U+001F, NOT a
+	# tab: tab is IFS whitespace, so `read` would collapse runs of
+	# empty fields and silently shift every value.
+	fields="$(jq -r --argjson now "$now" '
+		[ (.deepseek.usd // ""),
+		  (.deepseek.cny // ""),
+		  (.deepseek.error // ""),
+		  (.deepseek.fetched_at // ""),
+		  (.claude.five_hour_pct // ""),
+		  (.claude.seven_day_pct // ""),
+		  (.claude.error // "") ] | map(tostring) | join("\u001f")
+	' "$cache" 2>/dev/null)" || return 0
+
+	local ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err
+	IFS=$'\x1f' read -r ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err <<<"$fields"
+
+	local out="" ds="" marker="" age
+	if [[ -n "$ds_err" ]]; then
+		marker="!"
+	elif [[ -n "$ds_at" ]]; then
+		age="$(jq -rn --arg t "$ds_at" --argjson now "$now" \
+			'($now - ($t | fromdateiso8601))' 2>/dev/null || printf '0')"
+		if [[ "$age" =~ ^[0-9]+$ ]] && ((age > 2700)); then
+			marker="~"
+		fi
+	fi
+	if [[ -n "$ds_usd" || -n "$ds_cny" ]]; then
+		ds="${marker}\$${ds_usd:-–}/${ds_cny:-–}元"
+	elif [[ -n "$ds_err" ]]; then
+		ds="!DS"
+	fi
+	if [[ -n "$ds" ]]; then
+		out="#[fg=#4d6bfe]${ds}#[default]"
+	fi
+
+	local cl="" cl5s="" cl7s=""
+	if [[ -n "$cl_err" ]]; then
+		cl="!CL"
+	elif [[ -n "$cl5" || -n "$cl7" ]]; then
+		[[ -n "$cl5" ]] && cl5s="${cl5}%"
+		[[ -n "$cl7" ]] && cl7s="${cl7}%"
+		cl="${cl5s:-–}/${cl7s:-–}"
+	fi
+	if [[ -n "$cl" ]]; then
+		out="${out:+$out }#[fg=#d97757]${cl}#[default]"
+	fi
+
+	printf '%s' "$out"
+}
+
 # vigil_render_status <count> <auto> — the ONLY place the status format
 # string is built. Uses no pane-derived data and no #() command
 # substitution (Pitfall 5).
 vigil_render_status() {
-	local count="$1" auto="$2"
+	local count="$1" auto="$2" base usage
 	if [[ "$auto" == "on" ]]; then
-		printf '#[fg=white]%s Vigil #[fg=green]●#[default]' "$count"
+		base="#[fg=white]${count} Vigil #[fg=green]●#[default]"
 	else
-		printf '#[fg=white]%s Vigil #[fg=red]●#[default]' "$count"
+		base="#[fg=white]${count} Vigil #[fg=red]●#[default]"
+	fi
+	usage="$(vigil_usage_segment)"
+	if [[ -n "$usage" ]]; then
+		printf '%s %s' "$base" "$usage"
+	else
+		printf '%s' "$base"
 	fi
 }
 
