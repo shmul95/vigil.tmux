@@ -192,3 +192,21 @@ EOF
 	[[ "$output" == *"spawned: vigil-task-20261110090000"* ]]
 	[ "$(printf '%s\n' "$output" | tail -n 1)" = "vigil-task-cron: 3 tasks found, 3 spawned, 0 already running, 0 done (PR merged), 1 errors" ]
 }
+
+@test "CRON-01: missing gh prints a loud warning and counts an error too, symmetric with jq" {
+	local p out
+	out=""
+	IFS=: read -r -a _path_parts <<<"$PATH"
+	for p in "${_path_parts[@]}"; do
+		[[ -x "$p/gh" ]] && continue
+		out="${out:+$out:}$p"
+	done
+	PATH="$out" command -v gh >/dev/null 2>&1 && fail "gh unexpectedly still resolvable on the reduced PATH"
+
+	run --separate-stderr env PATH="$out" "$CRON"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" == *"gh not found"* ]]
+	[[ "$stderr" == *"completion detection disabled"* ]]
+	[[ "$output" == *"spawned: vigil-task-20261110090000"* ]]
+	[ "$(printf '%s\n' "$output" | tail -n 1)" = "vigil-task-cron: 3 tasks found, 3 spawned, 0 already running, 0 done (PR merged), 1 errors" ]
+}

@@ -24,6 +24,16 @@ if ! command -v jq >/dev/null 2>&1; then
 	errors=$((errors + 1))
 fi
 
+# gh is vigil-task-done-check's actual API client. Absent/unauthenticated
+# gh makes every done-check degrade to "not done", which would silently
+# respawn every completed task forever while reporting zero errors. Warn
+# and count it, exactly as for jq above -- same asymmetric-observability
+# fix the integration check flagged.
+if ! command -v gh >/dev/null 2>&1; then
+	echo "vigil-task-cron: warning: gh not found -- completion detection disabled" >&2
+	errors=$((errors + 1))
+fi
+
 # (1) Reader. Its contract says exit 0 always, but defend anyway: a
 # non-zero reader is an error, still summarised, exit stays 0.
 reader_rc=0
