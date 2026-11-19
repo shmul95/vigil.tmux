@@ -31,17 +31,24 @@ render_usage() {
 	[ "$output" = '#[fg=white]2 Vigil #[fg=red]●#[default]' ]
 }
 
-@test "DEEPSEEK-02: a cached balance renders as \$USD/CNY元 in its fixed color" {
+@test "DEEPSEEK-02: a cached USD balance renders as \$X.XX in its fixed color" {
 	printf '%s\n' '{"deepseek":{"usd":"12.34","cny":"88.00","fetched_at":"2026-11-18T08:00:00Z","error":null}}' >"$CACHE"
 	run render_usage
 	[[ "$output" == *'#[fg=#4d6bfe]'* ]]
-	[[ "$output" == *'$12.34/88.00元'* ]]
+	[[ "$output" == *'$12.34'* ]]
+	[[ "$output" != *'88.00'* ]]
+}
+
+@test "DEEPSEEK-02: a CNY-only balance converts to an estimated \$X.XX with a ≈ marker" {
+	printf '%s\n' '{"deepseek":{"cny":"71.00","fetched_at":"2026-11-18T08:00:00Z","error":null}}' >"$CACHE"
+	run render_usage
+	[[ "$output" == *'≈$10.00'* ]]
 }
 
 @test "DEEPSEEK-03: an error state is clearly marked, never silently wrong" {
 	printf '%s\n' '{"deepseek":{"usd":"12.34","cny":"88.00","fetched_at":"2026-11-18T08:00:00Z","error":"fetch failed (exit 22)"}}' >"$CACHE"
 	run render_usage
-	[[ "$output" == *'!$12.34/88.00元'* ]]
+	[[ "$output" == *'!$12.34'* ]]
 }
 
 @test "DEEPSEEK-03: an error with no cached values renders a marked placeholder" {
@@ -53,32 +60,38 @@ render_usage() {
 @test "RENDER-02: a cache older than 45 minutes is marked stale" {
 	printf '%s\n' '{"deepseek":{"usd":"1.00","cny":"7.00","fetched_at":"2020-01-01T00:00:00Z","error":null}}' >"$CACHE"
 	run render_usage
-	[[ "$output" == *'~$1.00/7.00元'* ]]
+	[[ "$output" == *'~$1.00'* ]]
 }
 
-@test "CLAUDE render path: percentages render in Claude's fixed color" {
-	printf '%s\n' '{"claude":{"five_hour_pct":42,"seven_day_pct":17,"fetched_at":"2026-11-18T08:00:00Z","error":null}}' >"$CACHE"
+@test "CLAUDE render path: both windows under threshold render two filled dots" {
+	printf '%s\n' '{"claude":{"five_hour_pct":42,"seven_day_pct":17,"fetched_at":"2999-01-01T00:00:00Z","error":null}}' >"$CACHE"
 	run render_usage
-	[[ "$output" == *'#[fg=#d97757]42%/17%'* ]]
+	[[ "$output" == *'#[fg=#d97757]●●'* ]]
 }
 
-@test "CLAUDE render path: a missing window renders a placeholder, not a wrong number" {
-	printf '%s\n' '{"claude":{"seven_day_pct":17,"fetched_at":"2026-11-18T08:00:00Z","error":null}}' >"$CACHE"
+@test "CLAUDE render path: a window at/over the exhaustion threshold renders hollow" {
+	printf '%s\n' '{"claude":{"five_hour_pct":42,"seven_day_pct":95,"fetched_at":"2999-01-01T00:00:00Z","error":null}}' >"$CACHE"
 	run render_usage
-	[[ "$output" == *'–/17%'* ]]
+	[[ "$output" == *'#[fg=#d97757]●○'* ]]
+}
+
+@test "CLAUDE render path: a missing window renders a dotted placeholder, not a wrong dot" {
+	printf '%s\n' '{"claude":{"seven_day_pct":17,"fetched_at":"2999-01-01T00:00:00Z","error":null}}' >"$CACHE"
+	run render_usage
+	[[ "$output" == *'◌●'* ]]
 }
 
 @test "RENDER-02: a stale Claude cache is marked the same way as DeepSeek" {
 	printf '%s\n' '{"claude":{"five_hour_pct":42,"seven_day_pct":17,"fetched_at":"2020-01-01T00:00:00Z","error":null}}' >"$CACHE"
 	run render_usage
-	[[ "$output" == *'~42%/17%'* ]]
+	[[ "$output" == *'~●●'* ]]
 }
 
 @test "RENDER-01: the queue/auto segment is preserved and the usage segment appended" {
 	printf '%s\n' '{"deepseek":{"usd":"1.00","cny":"7.00","fetched_at":"2999-01-01T00:00:00Z","error":null}}' >"$CACHE"
 	run render_status
 	[[ "$output" == '#[fg=white]2 Vigil #[fg=red]●#[default] '* ]]
-	[[ "$output" == *'$1.00/7.00元'* ]]
+	[[ "$output" == *'$1.00'* ]]
 }
 
 @test "RENDER-01: the render path contains no network client" {

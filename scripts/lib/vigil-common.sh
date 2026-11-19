@@ -346,12 +346,33 @@ vigil_read_queue_count() {
 	printf '%s' "$count"
 }
 
-# vigil_usage_segment — render the cached provider usage/balance (v1.2).
+# _vigil_usage_dot <pct|empty> <threshold> — "●" below <threshold>,
+# "○" at or above it (near/at exhaustion), "◌" when <pct> is empty (no
+# cached value for that window). Pure arithmetic, no network/cache I/O.
+_vigil_usage_dot() {
+	local pct="$1" threshold="$2"
+	[[ -n "$pct" ]] || { printf '◌'; return; }
+	awk -v p="$pct" -v t="$threshold" 'BEGIN { print (p + 0 >= t) ? "○" : "●" }'
+}
+
+# vigil_usage_segment — render the cached provider usage/balance (v1.2/v1.3).
 # Cache-only: NEVER performs network I/O (RENDER-02), so it is safe on
 # every status redraw. Prints nothing when the cache is absent, empty,
 # or unreadable. Fixed provider colors identify each entry; no name text.
 # DeepSeek #4d6bfe, Claude #d97757.
-# Markers: "!" = the last refresh failed, "~" = cache older than 45 min.
+#
+# DeepSeek renders as a single dollar figure: the API's own USD balance
+# when present, otherwise its CNY balance converted at a fixed
+# approximate rate (VIGIL_DEEPSEEK_CNY_PER_USD, default 7.1 -- update
+# periodically; this is a local estimate, never a live lookup) and
+# prefixed with "≈" to flag it as such.
+#
+# Claude renders as two dots, one per rate-limit window (five_hour,
+# seven_day): "●" means under VIGIL_CLAUDE_EXHAUST_PCT (default 90),
+# "○" means at/over it, "◌" means that window had no cached percentage.
+#
+# Markers (prefixed before either provider's text): "!" = the last
+# refresh/capture failed, "~" = cache older than 45 min.
 vigil_usage_segment() {
 	local cache now fields
 	cache="$(vigil_usage_cache_file)"
@@ -376,7 +397,8 @@ vigil_usage_segment() {
 	local ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err cl_at
 	IFS=$'\x1f' read -r ds_usd ds_cny ds_err ds_at cl5 cl7 cl_err cl_at <<<"$fields"
 
-	local out="" ds="" marker="" age
+	local out="" ds="" marker="" age rate
+	rate="${VIGIL_DEEPSEEK_CNY_PER_USD:-7.1}"
 	if [[ -n "$ds_err" ]]; then
 		marker="!"
 	elif [[ -n "$ds_at" ]]; then
@@ -386,8 +408,12 @@ vigil_usage_segment() {
 			marker="~"
 		fi
 	fi
-	if [[ -n "$ds_usd" || -n "$ds_cny" ]]; then
-		ds="${marker}\$${ds_usd:-–}/${ds_cny:-–}元"
+	if [[ -n "$ds_usd" ]]; then
+		ds="${marker}\$${ds_usd}"
+	elif [[ -n "$ds_cny" ]]; then
+		local est
+		est="$(awk -v cny="$ds_cny" -v rate="$rate" 'BEGIN { printf "%.2f", cny / rate }' 2>/dev/null)"
+		[[ -n "$est" ]] && ds="${marker}≈\$${est}"
 	elif [[ -n "$ds_err" ]]; then
 		ds="!DS"
 	fi
@@ -395,7 +421,8 @@ vigil_usage_segment() {
 		out="#[fg=#4d6bfe]${ds}#[default]"
 	fi
 
-	local cl="" cl5s="" cl7s="" cl_marker="" cl_age
+	local cl="" cl_marker="" cl_age threshold
+	threshold="${VIGIL_CLAUDE_EXHAUST_PCT:-90}"
 	if [[ -n "$cl_err" ]]; then
 		cl="!CL"
 	elif [[ -n "$cl5" || -n "$cl7" ]]; then
@@ -409,9 +436,7 @@ vigil_usage_segment() {
 				cl_marker="~"
 			fi
 		fi
-		[[ -n "$cl5" ]] && cl5s="${cl5}%"
-		[[ -n "$cl7" ]] && cl7s="${cl7}%"
-		cl="${cl_marker}${cl5s:-–}/${cl7s:-–}"
+		cl="${cl_marker}$(_vigil_usage_dot "$cl5" "$threshold")$(_vigil_usage_dot "$cl7" "$threshold")"
 	fi
 	if [[ -n "$cl" ]]; then
 		out="${out:+$out }#[fg=#d97757]${cl}#[default]"

@@ -149,16 +149,27 @@ This edits `~/.claude/settings.json`, which is global to every Claude Code
 session on this machine. Make the edit by hand; do not have a script rewrite
 that file.
 
+**Rendering:** Claude shows as two dots, one per rate-limit window
+(`five_hour`, `seven_day`) — `●` filled while under
+`VIGIL_CLAUDE_EXHAUST_PCT` (default 90), `○` hollow at/over it, `◌` when
+that window has no cached percentage. DeepSeek shows as a single dollar
+figure — the API's own USD balance when present, else its CNY balance
+converted at a fixed approximate rate (`VIGIL_DEEPSEEK_CNY_PER_USD`,
+default 7.1 — a local estimate, not a live lookup) and prefixed with `≈`.
+Both env vars are overridable; override `VIGIL_DEEPSEEK_CNY_PER_USD` if
+the rate drifts enough to matter.
+
 **Notes**
 - Subscriber-only: the `rate_limits` object appears after the first API
   response and only for Pro/Max/Ultra plans. No object → no Claude entry,
   and the segment simply omits Claude.
 - Claude Code drops each window after it resets; the wrapper stores the
-  missing window as `null`, and the segment renders `–` rather than a
-  stale number. If the input has no `rate_limits` object at all (e.g. a
-  non-subscriber plan), any previously cached Claude entry is dropped.
-- Percentages older than 45 minutes render with a `~` marker, exactly
-  like a stale DeepSeek balance.
+  missing window as `null`, and the segment renders `◌` for that window
+  rather than a stale dot. If the input has no `rate_limits` object at
+  all (e.g. a non-subscriber plan), any previously cached Claude entry is
+  dropped.
+- A `~` marker prefixes either provider's text when its cache is older
+  than 45 minutes.
 - The status-right segment is variable-length. If your `status-right`
   is very long, the segment can be truncated by tmux's
   `status-right-length`; raise it in your tmux config if needed.
