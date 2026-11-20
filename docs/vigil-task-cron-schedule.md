@@ -35,9 +35,11 @@ therefore safe to catch up.
 
 ## Cadence
 
-Every 15 minutes on the wall clock. `OnCalendar=*:0/15` (rather than the
-monotonic `OnUnitActiveSec=15min`) stays aligned to :00/:15/:30/:45 and,
-with `Persistent=true`, catches up one missed run after downtime.
+Once a day at 8am on the wall clock. `OnCalendar=*-*-* 08:00:00` (rather
+than the monotonic `OnUnitActiveSec=1d`) stays pinned to 08:00 regardless
+of when the timer was last enabled, and, with `Persistent=true`, catches
+up one missed run (e.g. the machine was asleep at 8am) the next time the
+user logs in.
 
 ## Hard prerequisites
 
@@ -90,10 +92,10 @@ ExecStart=%h/Repositories/vigil/scripts/vigil-task-cron
 
 ```ini
 [Unit]
-Description=Run vigil-task-cron every 15 minutes
+Description=Run vigil-task-cron daily at 8am
 
 [Timer]
-OnCalendar=*:0/15
+OnCalendar=*-*-* 08:00:00
 Persistent=true
 Unit=vigil-task-cron.service
 
@@ -131,5 +133,5 @@ loginctl enable-linger "$USER"
 If used, redirect both streams:
 
 ```cron
-*/15 * * * * /home/you/Repositories/vigil/scripts/vigil-task-cron >>/home/you/.local/state/vigil-task-cron.log 2>&1
+0 8 * * * /home/you/Repositories/vigil/scripts/vigil-task-cron >>/home/you/.local/state/vigil-task-cron.log 2>&1
 ```
