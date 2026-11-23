@@ -54,7 +54,8 @@ teardown() {
 	[[ "$output" == *"spawned: vigil-task-20261110090001 (window created in eip)"* ]]
 	[[ "$output" == *"spawned: vigil-task-20261112100000 (window created in eip)"* ]]
 	[ "$(printf '%s\n' "$output" | tail -n 1)" = "vigil-task-cron: 3 tasks found, 3 spawned, 0 already running, 0 done (PR merged), 0 errors" ]
-	[ "$(tmux list-windows -t eip -F '#{window_name}' | wc -l)" -eq 3 ]
+	# 3 task windows + the persistent vigil-home keeper window.
+	[ "$(tmux list-windows -t eip -F '#{window_name}' | wc -l)" -eq 4 ]
 
 	local i
 	for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
@@ -74,7 +75,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"skipped: vigil-task-20261110090000 (already running)"* ]]
 	[ "$(printf '%s\n' "$output" | tail -n 1)" = "vigil-task-cron: 3 tasks found, 0 spawned, 3 already running, 0 done (PR merged), 0 errors" ]
-	[ "$(tmux list-windows -t eip -F '#{window_name}' | wc -l)" -eq 3 ]
+	[ "$(tmux list-windows -t eip -F '#{window_name}' | wc -l)" -eq 4 ]
 }
 
 @test "CRON-01: a merged PR suppresses respawning for exactly that task while others are spawned" {
@@ -88,7 +89,8 @@ teardown() {
 
 	run tmux list-windows -t eip -F '#{window_name}'
 	[[ "$output" != *"vigil-task-20261110090000"* ]]
-	[ "$(printf '%s\n' "$output" | wc -l)" -eq 2 ]
+	# 2 task windows + vigil-home.
+	[ "$(printf '%s\n' "$output" | wc -l)" -eq 3 ]
 }
 
 @test "CRON-01: one run mixes new, already-running, and PR-done tasks without double-spawning or reaping" {
@@ -105,7 +107,8 @@ teardown() {
 	[ "$(printf '%s\n' "$output" | tail -n 1)" = "vigil-task-cron: 3 tasks found, 1 spawned, 1 already running, 1 done (PR merged), 0 errors" ]
 
 	run tmux list-windows -t eip -F '#{window_name}'
-	[ "$(printf '%s\n' "$output" | wc -l)" -eq 2 ]
+	# 2 task windows + vigil-home.
+	[ "$(printf '%s\n' "$output" | wc -l)" -eq 3 ]
 	[[ "$output" != *"vigil-task-20261110090001"* ]]
 }
 

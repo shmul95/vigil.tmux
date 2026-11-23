@@ -66,8 +66,10 @@ teardown() {
 	run vigil-task-spawn "$FIXTURE_DIR/valid-open.md"
 	[ "$status" -eq 0 ]
 
+	# The task window is created first (so a fresh session's active
+	# window is the one the human wants), then the keeper window.
 	windows="$(tmux list-windows -t eip -F '#{window_name}')"
-	[ "$windows" = "vigil-task-20261110090000" ]
+	[ "$windows" = $'vigil-task-20261110090000\nvigil-home' ]
 
 	local i
 	for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -75,7 +77,7 @@ teardown() {
 		sleep 0.2
 	done
 	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
-	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "/thinking-partner Please review the staging deploy and confirm the new worker pool is healthy." ]
+	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "--permission-mode auto /thinking-partner Please review the staging deploy and confirm the new worker pool is healthy." ]
 }
 
 @test "DEDUP-01: an exact-match pre-existing window is recognized as already running and is never re-spawned" {
@@ -85,8 +87,13 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[ "$output" = "skipped: vigil-task-20261110090000 (already running)" ]
 
+	# The pre-existing session is retrofitted with the keeper window,
+	# but the matching task window is still not duplicated.
 	count="$(tmux list-windows -t eip -F '#{window_name}' | wc -l)"
-	[ "$count" -eq 1 ]
+	[ "$count" -eq 2 ]
+	windows="$(tmux list-windows -t eip -F '#{window_name}')"
+	[ "$(grep -Fxc "vigil-task-20261110090000" <<<"$windows")" -eq 1 ]
+	[ "$(grep -Fxc "vigil-home" <<<"$windows")" -eq 1 ]
 }
 
 @test "DEDUP-01: running spawn twice in a row against the same task file produces exactly one window, not two" {
@@ -111,11 +118,12 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[ "$output" = "spawned: vigil-task-20261110090001 (window created in eip)" ]
 
+	# Two task windows plus the keeper window.
 	count="$(tmux list-windows -t eip -F '#{window_name}' | wc -l)"
-	[ "$count" -eq 2 ]
+	[ "$count" -eq 3 ]
 }
 
-@test "adversarial task note body (shell metacharacters) is neutralized via printf %q, never executed as code" {
+@test "adversarial task note body (shell metacharacters) is handed over as a file, never executed as code" {
 	pwned="$BATS_TEST_TMPDIR/PWNED"
 	base="$(mktemp -d)"
 	adv_dir="$base/adv"
@@ -175,7 +183,7 @@ teardown() {
 		sleep 0.2
 	done
 	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
-	expected=$'/thinking-partner Adds the worker pool healthcheck endpoint.\n\nReview by alice: Please add a timeout to the healthcheck call.\n\nComment by bob: LGTM once the timeout is added.'
+	expected=$'--permission-mode auto /thinking-partner Adds the worker pool healthcheck endpoint.\n\nReview by alice: Please add a timeout to the healthcheck call.\n\nComment by bob: LGTM once the timeout is added.'
 	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "$expected" ]
 
 	grep -qF -- "--repo EIP-memtide/memtide-dev" "$GH_CALLS_LOG"
@@ -197,5 +205,52 @@ teardown() {
 		sleep 0.2
 	done
 	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
-	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "/thinking-partner Please address the review feedback on https://github.com/EIP-memtide/memtide-dev/pull/123 before merging." ]
+	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "--permission-mode auto /thinking-partner Please address the review feedback on https://github.com/EIP-memtide/memtide-dev/pull/123 before merging." ]
+}
+
+@test "quitting a task window leaves eip (and its keeper window) alive" {
+	run vigil-task-spawn "$FIXTURE_DIR/valid-open.md"
+	[ "$status" -eq 0 ]
+	[[ "$output" == spawned:* ]]
+
+	# Simulate the human quitting claude: the task window closes.
+	tmux kill-window -t "eip:vigil-task-20261110090000"
+
+	run tmux has-session -t eip
+	[ "$status" -eq 0 ]
+	[ "$(tmux list-windows -t eip -F '#{window_name}')" = "vigil-home" ]
+}
+
+@test "a prompt larger than tmux's command-string limit still spawns intact" {
+	# SPAWN-04 folds PR review content into the prompt; a busy PR is
+	# tens of KB, which previously died inside tmux with "command too
+	# long" (~16 KiB limit). The body must travel via file, not the
+	# tmux command string.
+	base="$(mktemp -d)"
+	big_dir="$base/big"
+	mkdir -p "$big_dir"
+	{
+		printf '%s\n' "---" "id: 20261110090123" "status: open" "assignee: samuel" "created: 2026-11-10T09:01:23Z" "---" ""
+		printf 'BEGIN\n'
+		head -c 20000 /dev/zero | tr '\0' 'x'
+		printf '\nEND\n'
+	} >"$big_dir/task.md"
+
+	run vigil-task-spawn "$big_dir/task.md"
+	[ "$status" -eq 0 ]
+	[[ "$output" == spawned:* ]]
+
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ -s "$VIGIL_TEST_CLAUDE_LOG" ] && break
+		sleep 0.2
+	done
+	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
+	# Full body arrived (well over the ~16 KiB tmux limit), with its
+	# first and last lines intact.
+	[ "$(wc -c <"$VIGIL_TEST_CLAUDE_LOG")" -gt 20000 ]
+	grep -qF "BEGIN" "$VIGIL_TEST_CLAUDE_LOG"
+	grep -qF "END" "$VIGIL_TEST_CLAUDE_LOG"
+
+	rm -rf "$base"
 }

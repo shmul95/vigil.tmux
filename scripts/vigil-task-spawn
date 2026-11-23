@@ -19,6 +19,14 @@
 # dedup check here is the entire guarantee, not a backstop on top of
 # one).
 #
+# The spawned window runs `claude --permission-mode auto` (so the
+# session starts in auto mode even though no human is attached to
+# Shift+Tab it), and the prompt body is handed over through a temp
+# file read inside the window -- tmux rejects command strings over
+# ~16 KiB, which PR-rendered prompts routinely exceed. A persistent
+# `vigil-home` window keeps eip alive when the human quits claude;
+# see vigil_ensure_home_window below.
+#
 # Deliberately does NOT source vigil-common.sh or guard on
 # vigil_in_tmux: this script must work correctly with $TMUX unset
 # (every cron invocation, Phase 10) -- plain `tmux` calls with no
@@ -119,23 +127,62 @@ if [[ "$prompt_body" =~ github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0
 	fi
 fi
 
-# T-08-01 mitigation: printf '%q' on the FULL argument before
-# embedding it in the command string handed to tmux, which itself
-# re-parses that string through a second shell layer ($SHELL -c)
-# when the window starts -- a naive double-quote interpolation
-# breaks (and is injectable) the moment task_file contains a
-# literal '"', '`', '$()', ';', or "'" (08-RESEARCH.md Pitfall 3,
-# verified directly). Do not hand-roll this escaping. $prompt_body
-# (the note's own body, or PR content folded in above) is just as
-# untrusted as $task_file ever was, so the same discipline applies.
-arg="$(printf '%q' "/thinking-partner ${prompt_body}")"
-cmd="$claude_bin $arg"
+# Spawned sessions must start in auto permission mode. Relying on the
+# user's ~/.claude/settings.json permissions.defaultMode is not enough
+# here: a cron-spawned window resolves whatever `claude` is first on
+# the systemd user manager's PATH (which can be a different, older
+# build than the interactive shell's), and a session nobody is
+# attached to can never be Shift+Tab'd into auto by hand. A command
+# line flag has the highest precedence of all permission-mode sources.
+permission_mode="auto"
+
+# tmux caps the command string handed to new-session/new-window (tmux
+# 3.7b rejects anything over ~16 KiB with "command too long"), and
+# SPAWN-04 folds the linked PR's body/reviews/comments into the
+# prompt, which routinely exceeds that -- a busy PR is tens of KB.
+# Never put the prompt itself into the tmux command string. Write it
+# to a private temp file instead and have the window's own shell read
+# it back into ONE argv element at start-up. That shell removes the
+# file immediately after reading it, so the normal path leaves nothing
+# behind; the content never passes through tmux's parser at all, which
+# also supersedes the T-08-01 printf '%q' escaping discipline (the
+# prompt is now data read from a file, not shell syntax).
+prompt_file="$(mktemp "${TMPDIR:-/tmp}/vigil-task-prompt.XXXXXX")"
+printf '%s' "/thinking-partner ${prompt_body}" >"$prompt_file"
+# mktemp's own charset is safe, but TMPDIR is caller-controlled and
+# this path is re-parsed by the window's shell -- quote it anyway.
+prompt_file_q="$(printf '%q' "$prompt_file")"
+cmd="vigil_prompt=\$(cat $prompt_file_q); rm -f $prompt_file_q; exec $claude_bin --permission-mode $permission_mode \"\$vigil_prompt\""
+
+# A tmux session dies with its last window, and DEDUP-01's only
+# liveness signal is window-name existence. Without a keeper window,
+# the first time the human quits a spawned claude (/exit, Ctrl-D,
+# crash) that task window closes, eip loses its last window, and any
+# attached client is dropped out of tmux -- the exact "quit claude and
+# the session vanished" failure. Keep one dedicated `vigil-home` shell
+# window in eip at all times. Quitting a task then closes only that
+# task's window (so the next sweep can respawn it) while eip and the
+# attached client survive. The home window is never a task identity:
+# dedup below matches only exact `vigil-task-<id>` names, and the
+# name cannot collide with them.
+vigil_ensure_home_window() {
+	local windows
+	windows="$(tmux list-windows -t eip -F '#{window_name}' 2>/dev/null || true)"
+	if ! grep -Fxq "vigil-home" <<<"$windows"; then
+		tmux new-window -d -t eip -n "vigil-home"
+	fi
+}
 
 # DEDUP-02: create `eip` if it doesn't exist yet, rather than
 # failing. Both branches construct the identical window_name + cmd;
 # only the tmux subcommand differs (08-CONTEXT.md "eip Session
 # Lifecycle").
 if tmux has-session -t eip 2>/dev/null; then
+	# Retrofit the keeper window onto a pre-existing eip too, so an
+	# older session created before this behavior existed also
+	# survives its last task window closing. Done before dedup so a
+	# "skipped" run still repairs the session.
+	vigil_ensure_home_window
 	# T-08-02 mitigation: exact-match via explicit enumeration,
 	# NEVER a `-t "eip:$window_name"` target probe -- tmux's own
 	# target resolution does prefix/glob matching, not exact
@@ -155,6 +202,7 @@ if tmux has-session -t eip 2>/dev/null; then
 	tmux new-window -d -t eip -n "$window_name" "$cmd"
 else
 	tmux new-session -d -s eip -n "$window_name" "$cmd"
+	vigil_ensure_home_window
 fi
 
 echo "spawned: $window_name (window created in eip)"
