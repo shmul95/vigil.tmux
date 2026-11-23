@@ -37,6 +37,15 @@
 vigil_frontmatter_parse() {
 	local file="$1"
 	declare -gA VIGIL_FM=()
+	# SPAWN-03: VIGIL_FM_BODY is populated in this SAME read pass (no
+	# second parser, no second file open) -- everything after the
+	# closing "---" delimiter, trimmed of leading/trailing blank
+	# lines only (internal blank lines between paragraphs are kept).
+	# Purely additive: existing callers (vigil-task-reader,
+	# vigil-task-done-check) never read this global and are
+	# unaffected by its presence.
+	declare -g VIGIL_FM_BODY=""
+	local -a body_lines=()
 	local line lineno=0 closed=0 rc=0
 
 	# 07-RESEARCH.md Pitfall 2: a bare `while ... done < "$file"`
@@ -55,9 +64,13 @@ vigil_frontmatter_parse() {
 				[[ "$line" == "---" ]] || return 1
 				continue
 			fi
+			if [[ $closed -eq 1 ]]; then
+				body_lines+=("$line")
+				continue
+			fi
 			if [[ "$line" == "---" ]]; then
 				closed=1
-				break
+				continue
 			fi
 			[[ -z "$line" ]] && continue
 			[[ "$line" == *:* ]] || return 1
@@ -77,5 +90,19 @@ vigil_frontmatter_parse() {
 
 	[[ $rc -eq 0 ]] || return 1
 	[[ $closed -eq 1 ]] || return 1
+
+	# SPAWN-03: trim leading/trailing blank entries only -- internal
+	# blank lines between paragraphs are preserved.
+	while ((${#body_lines[@]} > 0)) && [[ -z "${body_lines[0]}" ]]; do
+		body_lines=("${body_lines[@]:1}")
+	done
+	while ((${#body_lines[@]} > 0)) && [[ -z "${body_lines[-1]}" ]]; do
+		unset 'body_lines[-1]'
+		body_lines=("${body_lines[@]}")
+	done
+	if ((${#body_lines[@]} > 0)); then
+		VIGIL_FM_BODY="$(printf '%s\n' "${body_lines[@]}")"
+	fi
+
 	return 0
 }

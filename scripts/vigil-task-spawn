@@ -85,14 +85,50 @@ claude_bin="$(command -v "${VIGIL_CLAUDE_BIN:-claude}")" || {
 	exit 1
 }
 
+# SPAWN-03: reuse the VIGIL_FM_BODY already produced by the
+# vigil_frontmatter_parse call made earlier in this same script (no
+# second read of task_file) -- the note's own markdown body is what
+# reaches the prompt by default, instead of a bare @<path> reference.
+prompt_body="${VIGIL_FM_BODY:-}"
+
+# SPAWN-04: if the body links a GitHub PR, try to fold that PR's
+# actual review/comment content into the prompt instead -- fails
+# open to the raw note body on ANY gh failure or surprising
+# empty-but-successful result, mirroring vigil-task-done-check's own
+# gh fail-open contract (09-CONTEXT.md "GitHub Query"). The captured
+# org/repo/number substrings are restricted to [A-Za-z0-9_.-]+ /
+# [0-9]+ by the regex itself -- no shell metacharacter can survive
+# that charset -- and are passed to gh as separate argv elements,
+# never interpolated into a re-evaluated shell string (T-SPAWN-04-01).
+if [[ "$prompt_body" =~ github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+) ]]; then
+	pr_org="${BASH_REMATCH[1]}"
+	pr_repo="${BASH_REMATCH[2]}"
+	pr_number="${BASH_REMATCH[3]}"
+	pr_jq='(.body // "") as $body
+		| ([.reviews[]? | select(.body != "") | "Review by " + (.author.login // "unknown") + ": " + .body]) as $reviews
+		| ([.comments[]? | select(.body != "") | "Comment by " + (.author.login // "unknown") + ": " + .body]) as $comments
+		| ([$body] + $reviews + $comments | map(select(. != "")) | join("\n\n"))'
+	# The jq filter is applied locally (via a separate `jq` call on
+	# gh's captured raw JSON) rather than via gh's own --jq flag, the
+	# same two-step capture-then-filter shape vigil-task-done-check
+	# already uses -- this keeps the filtering testable against a
+	# dumb PATH-stub `gh` that only echoes canned JSON back verbatim.
+	if raw_pr_json="$(gh pr view "$pr_number" --repo "$pr_org/$pr_repo" --json reviews,comments,body 2>/dev/null)" &&
+		pr_content="$(jq -r "$pr_jq" <<<"$raw_pr_json" 2>/dev/null)" && [[ -n "$pr_content" ]]; then
+		prompt_body="$pr_content"
+	fi
+fi
+
 # T-08-01 mitigation: printf '%q' on the FULL argument before
 # embedding it in the command string handed to tmux, which itself
 # re-parses that string through a second shell layer ($SHELL -c)
 # when the window starts -- a naive double-quote interpolation
 # breaks (and is injectable) the moment task_file contains a
 # literal '"', '`', '$()', ';', or "'" (08-RESEARCH.md Pitfall 3,
-# verified directly). Do not hand-roll this escaping.
-arg="$(printf '%q' "/thinking-partner @${task_file}")"
+# verified directly). Do not hand-roll this escaping. $prompt_body
+# (the note's own body, or PR content folded in above) is just as
+# untrusted as $task_file ever was, so the same discipline applies.
+arg="$(printf '%q' "/thinking-partner ${prompt_body}")"
 cmd="$claude_bin $arg"
 
 # DEDUP-02: create `eip` if it doesn't exist yet, rather than
