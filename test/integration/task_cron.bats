@@ -62,7 +62,7 @@ teardown() {
 		sleep 0.2
 	done
 	[ "$(wc -l <"$VIGIL_TEST_CLAUDE_LOG")" -ge 3 ]
-	grep -qF "/thinking-partner @$CANON/valid-open.md" "$VIGIL_TEST_CLAUDE_LOG"
+	grep -qF "/thinking-partner Please review the staging deploy and confirm the new worker pool is healthy." "$VIGIL_TEST_CLAUDE_LOG"
 }
 
 @test "CRON-01: a back-to-back second run reports already-running tasks and creates no duplicate windows" {
