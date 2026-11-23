@@ -33,6 +33,31 @@ The script is idempotent: tmux window-name existence is the only liveness
 signal, so repeated runs never spawn the same task twice. A missed run is
 therefore safe to catch up.
 
+## Spawned windows
+
+Each spawned window runs `claude --permission-mode auto "/thinking-partner
+<task content>"`. The flag is explicit rather than relying on
+`~/.claude/settings.json`'s `permissions.defaultMode`, because a
+cron-spawned window resolves whichever `claude` the systemd user manager's
+PATH finds first — which can be a different Claude Code build than the
+interactive shell's — and nobody is attached to Shift+Tab the session by
+hand. Pin the intended binary with `VIGIL_CLAUDE_BIN` (see below).
+
+The prompt (the task note's body, or the linked PR's review/comment
+content) is written to a temp file and read back by the window's own shell,
+not passed in the tmux command string: tmux rejects command strings over
+roughly 16 KiB (`command too long`), and PR-rendered prompts routinely
+exceed that. The temp file is removed by the spawned shell immediately
+after it is read.
+
+`eip` always keeps one dedicated `vigil-home` shell window in addition to
+the task windows. A tmux session dies with its last window, so without it,
+quitting a spawned Claude (`/exit`, Ctrl-D) would close the task window,
+destroy `eip`, and drop any attached client out of tmux. With the keeper
+window, quitting a task closes only that task's window — the next sweep can
+respawn it — while `eip` and the client survive. `vigil-home` is never
+matched by the `vigil-task-<id>` dedup check.
+
 ## Cadence
 
 Once a day at 8am on the wall clock. `OnCalendar=*-*-* 08:00:00` (rather
@@ -40,6 +65,23 @@ than the monotonic `OnUnitActiveSec=1d`) stays pinned to 08:00 regardless
 of when the timer was last enabled, and, with `Persistent=true`, catches
 up one missed run (e.g. the machine was asleep at 8am) the next time the
 user logs in.
+
+## Manual runs — the `vigil` CLI
+
+`scripts/vigil` is the manual control surface. It is installed as `vigil`
+on PATH (the home-manager module does this):
+
+```bash
+vigil eip cron     # run the sweep now (the same script the timer runs)
+vigil eip attach   # attach to the eip session (switch-client if already
+                   # inside tmux); creates it with a vigil-home window if absent
+vigil thu attach   # attach to any other tmux session by name
+```
+
+General form: `vigil <workflow> <action>`. The workflow is the tmux session
+it owns; `cron` is only registered for `eip` (adding another workflow means
+adding a branch to `scripts/vigil`). `attach` rejects a session that does
+not exist unless Vigil owns it.
 
 ## Hard prerequisites
 
@@ -51,7 +93,7 @@ All of these must resolve on the scheduler's PATH:
 | `tmux` | liveness check and window creation (default socket; the `eip` session) |
 | `gh` | merged-PR lookup, authenticated to the `EIP-memtide` org |
 | `jq` | required by `vigil-task-done-check` to extract the PR number/URL |
-| `claude` | launched inside each spawned window (or set `VIGIL_CLAUDE_BIN` to an absolute path) |
+| `claude` | launched inside each spawned window; pin it with `VIGIL_CLAUDE_BIN` so the cron does not pick up a stale build that happens to come first on the scheduler's PATH |
 
 **`jq` matters:** the systemd user manager's PATH is much shorter than an
 interactive shell's. If `jq` is missing, `vigil-task-cron` prints
@@ -82,10 +124,13 @@ Type=oneshot
 # The systemd user manager's PATH is shorter than an interactive shell's.
 # Include every directory your binaries live in; jq MUST be resolvable.
 Environment=PATH=%h/.nix-profile/bin:/run/current-system/sw/bin
+# Pin the same Claude Code build the interactive shell uses. The system
+# profile's claude can lag the wrapper in ~/.local/bin; without this the
+# spawned session silently runs whichever one PATH finds first.
+Environment=VIGIL_CLAUDE_BIN=%h/.local/bin/claude
 ExecStart=%h/Repositories/vigil/scripts/vigil-task-cron
 # Optional overrides:
 # Environment=VIGIL_TASKS_DIR=/abs/path/to/memtide/Tasks/samuel
-# Environment=VIGIL_CLAUDE_BIN=%h/.local/bin/claude
 ```
 
 `~/.config/systemd/user/vigil-task-cron.timer`:
@@ -122,6 +167,8 @@ loginctl enable-linger "$USER"
 
 - `systemctl --user list-timers vigil-task-cron.timer` shows the next run.
 - `journalctl --user -u vigil-task-cron` shows every run's summary line.
+- `vigil eip cron` runs the same sweep on demand and prints its summary;
+  `vigil eip attach` jumps straight to the spawned sessions.
 - If every run reports `0 tasks found`, either the vault is genuinely
   empty or `VIGIL_TASKS_DIR` is wrong (see prerequisites above).
 - A `warning: jq not found` line means completion detection is disabled
