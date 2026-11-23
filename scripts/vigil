@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# vigil — manual control surface for Vigil's tmux workflows.
+#
+#   vigil <workflow> cron     run that workflow's task cron now
+#   vigil <workflow> attach   attach to (or switch to) the workflow's
+#                             tmux session
+#
+# A workflow is named after the tmux session it owns. Only `eip` has
+# a cron today (the memtide task sweep -- the exact same script the
+# systemd timer runs), but `attach` works for any session name, so
+# `vigil thu attach` is valid for sessions Vigil did not create. Add
+# a new workflow by adding a branch to the first case below.
+#
+# `attach` switches the client when already inside tmux (the normal
+# case) and falls back to `tmux attach` outside it. eip is
+# Vigil-managed and is created on demand with the same persistent
+# `vigil-home` window vigil-task-spawn uses (so it survives its last
+# task window closing); any other session must already exist.
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+	cat >&2 <<'EOF'
+usage: vigil <workflow> <action>
+
+actions:
+  cron     run the workflow's task cron now (same as the systemd sweep)
+  attach   attach to (or switch to) the workflow's tmux session
+
+workflows:
+  eip      memtide task-cron session (the only workflow with a cron)
+
+examples:
+  vigil eip cron
+  vigil eip attach
+  vigil thu attach
+EOF
+	exit 2
+}
+
+[[ $# -eq 2 ]] || usage
+
+workflow="$1"
+action="$2"
+
+case "$workflow:$action" in
+eip:cron)
+	# Same entry point the daily systemd timer runs. It always exits
+	# 0 (fail-open) and prints one summary line.
+	if ! "$CURRENT_DIR/vigil-task-cron"; then
+		echo "vigil: task cron reported a fatal error" >&2
+		exit 1
+	fi
+	echo "vigil: task cron finished; attach with 'vigil eip attach'" >&2
+	exit 0
+	;;
+*:cron)
+	echo "vigil: no cron registered for workflow '$workflow'" >&2
+	exit 2
+	;;
+*:attach) ;;
+*)
+	usage
+	;;
+esac
+
+session="$workflow"
+
+if ! tmux has-session -t "$session" 2>/dev/null; then
+	if [[ "$workflow" == "eip" ]]; then
+		# Vigil owns eip; start it the same way the spawn script
+		# leaves it -- with a keeper window, so a client that lands
+		# here before any task exists does not sit in a session
+		# that would die the moment the shell exits.
+		tmux new-session -d -s eip -n "vigil-home"
+	else
+		echo "vigil: no tmux session '$session' to attach to" >&2
+		exit 1
+	fi
+fi
+
+if [[ -n "${TMUX:-}" ]]; then
+	exec tmux switch-client -t "$session"
+else
+	exec tmux attach -t "$session"
+fi
