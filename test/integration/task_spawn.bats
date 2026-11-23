@@ -17,12 +17,37 @@ setup() {
 	unset TMUX
 	vigil_test_server_start
 	vigil_test_stub_claude
+
+	# SPAWN-04: a plain PATH-prepend `gh` stub, mirroring
+	# test/unit/task_done_check.bats's pattern exactly. None of the
+	# pre-existing fixtures' bodies contain a "github.com/.../pull/"
+	# substring, so this stub is never invoked by any pre-existing
+	# test in this file -- zero risk of interference with
+	# DEDUP-01/DEDUP-02/T-08-02/no-focus-steal/DEBT-02.
+	GH_STUB_DIR="$(mktemp -d)"
+	mkdir -p "$GH_STUB_DIR/bin"
+	GH_CALLS_LOG="$GH_STUB_DIR/gh_calls.log"
+	: >"$GH_CALLS_LOG"
+	export GH_CALLS_LOG
+	cat >"$GH_STUB_DIR/bin/gh" <<STUB
+#!/usr/bin/env bash
+# Controlled by env vars the test sets before \`run\`:
+#   GH_STUB_EXIT   - exit code to return (default 0)
+#   GH_STUB_STDOUT - exact stdout to print
+#   GH_STUB_STDERR - exact stderr to print
+printf '%s\n' "\$*" >>"$GH_CALLS_LOG"
+printf '%s' "\${GH_STUB_STDOUT:-}"
+printf '%s' "\${GH_STUB_STDERR:-}" >&2
+exit "\${GH_STUB_EXIT:-0}"
+STUB
+	chmod +x "$GH_STUB_DIR/bin/gh"
+	export PATH="$GH_STUB_DIR/bin:$PATH"
 }
 
 teardown() {
 	vigil_test_stub_claude_cleanup
 	vigil_test_server_stop
-	rm -rf "${VIGIL_RUNTIME_DIR:-}"
+	rm -rf "${VIGIL_RUNTIME_DIR:-}" "${GH_STUB_DIR:-}"
 }
 
 @test "DEDUP-02: creates the eip session when it does not exist yet, rather than failing" {
@@ -50,7 +75,7 @@ teardown() {
 		sleep 0.2
 	done
 	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
-	grep -qF "/thinking-partner @$FIXTURE_DIR/valid-open.md" "$VIGIL_TEST_CLAUDE_LOG"
+	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "/thinking-partner Please review the staging deploy and confirm the new worker pool is healthy." ]
 }
 
 @test "DEDUP-01: an exact-match pre-existing window is recognized as already running and is never re-spawned" {
@@ -90,13 +115,13 @@ teardown() {
 	[ "$count" -eq 2 ]
 }
 
-@test "adversarial task_file path (shell metacharacters) is neutralized via printf %q, never executed as code" {
+@test "adversarial task note body (shell metacharacters) is neutralized via printf %q, never executed as code" {
 	pwned="$BATS_TEST_TMPDIR/PWNED"
 	base="$(mktemp -d)"
-	name="$(printf 'has"back`tick$(touch %s);quote'\''end' "$pwned")"
-	adv_dir="$base/$name"
+	adv_dir="$base/adv"
 	mkdir -p "$adv_dir"
-	cp "$FIXTURE_DIR/valid-open.md" "$adv_dir/task.md"
+	adversarial_line="Reminder: run \`touch $pwned\`; then \"finish up\" and \$(echo pwned) now."
+	printf '%s\n' "---" "id: 20261110090099" "status: open" "assignee: samuel" "created: 2026-11-10T09:00:00Z" "---" "" "$adversarial_line" >"$adv_dir/task.md"
 
 	run vigil-task-spawn "$adv_dir/task.md"
 	[ "$status" -eq 0 ]
@@ -108,7 +133,7 @@ teardown() {
 		sleep 0.2
 	done
 	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
-	grep -qF "$adv_dir/task.md" "$VIGIL_TEST_CLAUDE_LOG"
+	grep -qF -- "$adversarial_line" "$VIGIL_TEST_CLAUDE_LOG"
 	[ ! -e "$pwned" ]
 
 	rm -rf "$base"
@@ -135,4 +160,42 @@ teardown() {
 	[[ "$stderr" != *"bob"* ]]
 	run tmux has-session -t eip
 	[ "$status" -ne 0 ]
+}
+
+@test "SPAWN-04: a PR-linked task note renders the PR's body/reviews/comments into the prompt instead of the raw note body" {
+	export GH_STUB_STDOUT='{"body":"Adds the worker pool healthcheck endpoint.","reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"Please add a timeout to the healthcheck call."}],"comments":[{"author":{"login":"bob"},"body":"LGTM once the timeout is added."}]}'
+
+	run vigil-task-spawn "$FIXTURE_DIR/pr-linked.md"
+	[ "$status" -eq 0 ]
+	[[ "$output" == spawned:* ]]
+
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ -s "$VIGIL_TEST_CLAUDE_LOG" ] && break
+		sleep 0.2
+	done
+	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
+	expected=$'/thinking-partner Adds the worker pool healthcheck endpoint.\n\nReview by alice: Please add a timeout to the healthcheck call.\n\nComment by bob: LGTM once the timeout is added.'
+	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "$expected" ]
+
+	grep -qF -- "--repo EIP-memtide/memtide-dev" "$GH_CALLS_LOG"
+	grep -qF -- "--json reviews,comments,body" "$GH_CALLS_LOG"
+	grep -qF -- "123" "$GH_CALLS_LOG"
+}
+
+@test "SPAWN-04: a gh failure on a PR-linked task note falls back to the raw note body without aborting the spawn" {
+	export GH_STUB_EXIT=1
+	export GH_STUB_STDERR='non-200 OK status code: 401 Unauthorized'
+
+	run vigil-task-spawn "$FIXTURE_DIR/pr-linked.md"
+	[ "$status" -eq 0 ]
+	[[ "$output" == spawned:* ]]
+
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ -s "$VIGIL_TEST_CLAUDE_LOG" ] && break
+		sleep 0.2
+	done
+	[ -s "$VIGIL_TEST_CLAUDE_LOG" ]
+	[ "$(cat "$VIGIL_TEST_CLAUDE_LOG")" = "/thinking-partner Please address the review feedback on https://github.com/EIP-memtide/memtide-dev/pull/123 before merging." ]
 }
