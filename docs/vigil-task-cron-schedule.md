@@ -72,16 +72,19 @@ user logs in.
 on PATH (the home-manager module does this):
 
 ```bash
-vigil eip cron     # run the sweep now (the same script the timer runs)
-vigil eip attach   # attach to the eip session (switch-client if already
+vigil cron eip     # run the sweep now (the same script the timer runs)
+vigil attach eip   # attach to the eip session (switch-client if already
                    # inside tmux); creates it with a vigil-home window if absent
-vigil thu attach   # attach to any other tmux session by name
+vigil attach thu   # attach to any other tmux session by name
 ```
 
-General form: `vigil <workflow> <action>`. The workflow is the tmux session
-it owns; `cron` is only registered for `eip` (adding another workflow means
-adding a branch to `scripts/vigil`). `attach` rejects a session that does
-not exist unless Vigil owns it.
+General form: `vigil <action> <workflow>`. The workflow is the tmux session
+it owns. `thu` now also has a real cron: `vigil cron thu` triggers the
+tsinghua-lms producer+consumer systemd units (`systemctl --user start
+--wait`, in order, producer before consumer) rather than being implemented
+in this script. Adding another workflow's cron means adding a branch to
+`scripts/vigil`. `attach` rejects a session that does not exist unless
+Vigil owns it.
 
 ## Hard prerequisites
 
@@ -167,8 +170,8 @@ loginctl enable-linger "$USER"
 
 - `systemctl --user list-timers vigil-task-cron.timer` shows the next run.
 - `journalctl --user -u vigil-task-cron` shows every run's summary line.
-- `vigil eip cron` runs the same sweep on demand and prints its summary;
-  `vigil eip attach` jumps straight to the spawned sessions.
+- `vigil cron eip` runs the same sweep on demand and prints its summary;
+  `vigil attach eip` jumps straight to the spawned sessions.
 - If every run reports `0 tasks found`, either the vault is genuinely
   empty or `VIGIL_TASKS_DIR` is wrong (see prerequisites above).
 - A `warning: jq not found` line means completion detection is disabled
