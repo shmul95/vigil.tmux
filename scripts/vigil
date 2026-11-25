@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # vigil — manual control surface for Vigil's tmux workflows.
 #
-#   vigil <workflow> cron     run that workflow's task cron now
-#   vigil <workflow> attach   attach to (or switch to) the workflow's
+#   vigil cron <workflow>     run that workflow's task cron now
+#   vigil attach <workflow>   attach to (or switch to) the workflow's
 #                             tmux session
 #
-# A workflow is named after the tmux session it owns. Only `eip` has
-# a cron today (the memtide task sweep -- the exact same script the
-# systemd timer runs), but `attach` works for any session name, so
-# `vigil thu attach` is valid for sessions Vigil did not create. Add
-# a new workflow by adding a branch to the first case below.
+# A workflow is named after the tmux session it owns. `eip` has a
+# cron (the memtide task sweep -- the exact same script the systemd
+# timer runs), and `thu` has a cron that triggers the sibling-repo
+# tsinghua-lms producer+consumer systemd units synchronously (this
+# script does not duplicate their mullvad/cookie/freshness-guard
+# logic). `attach` works for any session name, so `vigil attach thu`
+# is valid for sessions Vigil did not create. Add a new workflow's
+# cron by adding a branch to the first case below.
 #
 # `attach` switches the client when already inside tmux (the normal
 # case) and falls back to `tmux attach` outside it. eip is
@@ -22,44 +25,58 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
 	cat >&2 <<'EOF'
-usage: vigil <workflow> <action>
+usage: vigil <action> <workflow>
 
 actions:
   cron     run the workflow's task cron now (same as the systemd sweep)
   attach   attach to (or switch to) the workflow's tmux session
 
 workflows:
-  eip      memtide task-cron session (the only workflow with a cron)
+  eip      memtide task-cron session
+  thu      tsinghua-lms cron (triggers the producer+consumer systemd
+           units; attach is generic/unregistered)
 
 examples:
-  vigil eip cron
-  vigil eip attach
-  vigil thu attach
+  vigil cron eip
+  vigil attach eip
+  vigil attach thu
 EOF
 	exit 2
 }
 
 [[ $# -eq 2 ]] || usage
 
-workflow="$1"
-action="$2"
+action="$1"
+workflow="$2"
 
-case "$workflow:$action" in
-eip:cron)
+case "$action:$workflow" in
+cron:eip)
 	# Same entry point the daily systemd timer runs. It always exits
 	# 0 (fail-open) and prints one summary line.
 	if ! "$CURRENT_DIR/vigil-task-cron"; then
 		echo "vigil: task cron reported a fatal error" >&2
 		exit 1
 	fi
-	echo "vigil: task cron finished; attach with 'vigil eip attach'" >&2
+	echo "vigil: task cron finished; attach with 'vigil attach eip'" >&2
 	exit 0
 	;;
-*:cron)
+cron:thu)
+	if ! systemctl --user start --wait tsinghua-lms-producer.service; then
+		echo "vigil: tsinghua-lms-producer.service failed; see 'journalctl --user -u tsinghua-lms-producer.service'" >&2
+		exit 1
+	fi
+	if ! systemctl --user start --wait tsinghua-lms-consumer.service; then
+		echo "vigil: tsinghua-lms-consumer.service failed; see 'journalctl --user -u tsinghua-lms-consumer.service'" >&2
+		exit 1
+	fi
+	echo "vigil: tsinghua-lms cron finished; attach with 'vigil attach eip'" >&2
+	exit 0
+	;;
+cron:*)
 	echo "vigil: no cron registered for workflow '$workflow'" >&2
 	exit 2
 	;;
-*:attach) ;;
+attach:*) ;;
 *)
 	usage
 	;;
