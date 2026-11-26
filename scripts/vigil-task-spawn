@@ -184,7 +184,22 @@ if [[ -n "$course" ]]; then
 		# what its author already wrote down. If the skill file or its
 		# allowed-tools line is missing, skip the headless pass entirely
 		# -- there is no safe default scope to fall back to.
-		report_skill_md="$report_repo/.claude/skills/$report_skill_name/SKILL.md"
+		# Find the skill by its declared `name:` frontmatter, not by
+		# assuming the containing directory is named identically --
+		# nre-weekly-report's own directory is nre-weekly-reportS
+		# (plural), while `name:` (what /slash-command resolution
+		# actually matches on) is singular. Matching on directory
+		# name silently found nothing here.
+		report_skill_md=""
+		if [[ -d "$report_repo/.claude/skills" ]]; then
+			for candidate in "$report_repo"/.claude/skills/*/SKILL.md; do
+				[[ -f "$candidate" ]] || continue
+				if [[ "$(sed -n 's/^name:[[:space:]]*//p' "$candidate" | head -1)" == "$report_skill_name" ]]; then
+					report_skill_md="$candidate"
+					break
+				fi
+			done
+		fi
 		report_allowed_tools=""
 		if [[ -f "$report_skill_md" ]]; then
 			report_allowed_tools="$(sed -n 's/^allowed-tools:[[:space:]]*//p' "$report_skill_md" | head -1)"
