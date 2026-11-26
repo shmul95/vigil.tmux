@@ -238,56 +238,70 @@ printf '%s' "/thinking-partner ${prompt_body}" >"$prompt_file"
 prompt_file_q="$(printf '%q' "$prompt_file")"
 cmd="vigil_prompt=\$(cat $prompt_file_q); rm -f $prompt_file_q; exec $claude_bin --permission-mode $permission_mode \"\$vigil_prompt\""
 
+# Route by source: tsinghua-lms-sourced tasks go into a dedicated `thu`
+# tmux session instead of `eip` -- eip stays reserved for the
+# EIP/Discord cron's own tasks, keeping the two task streams visually
+# and operationally separate. Every other source (including no source
+# field at all, e.g. the Discord task-handoff notes this script was
+# originally built for) keeps the pre-existing `eip` behavior
+# unchanged -- this is additive, not a breaking change to DEDUP-02's
+# original locked session choice.
+target_session="eip"
+if [[ "${VIGIL_FM[source]:-}" == "tsinghua-lms" ]]; then
+	target_session="thu"
+fi
+
 # A tmux session dies with its last window, and DEDUP-01's only
 # liveness signal is window-name existence. Without a keeper window,
 # the first time the human quits a spawned claude (/exit, Ctrl-D,
-# crash) that task window closes, eip loses its last window, and any
-# attached client is dropped out of tmux -- the exact "quit claude and
-# the session vanished" failure. Keep one dedicated `vigil-home` shell
-# window in eip at all times. Quitting a task then closes only that
-# task's window (so the next sweep can respawn it) while eip and the
-# attached client survive. The home window is never a task identity:
-# dedup below matches only exact `vigil-task-<id>` names, and the
-# name cannot collide with them.
+# crash) that task window closes, the target session loses its last
+# window, and any attached client is dropped out of tmux -- the exact
+# "quit claude and the session vanished" failure. Keep one dedicated
+# `vigil-home` shell window in the target session at all times.
+# Quitting a task then closes only that task's window (so the next
+# sweep can respawn it) while the session and the attached client
+# survive. The home window is never a task identity: dedup below
+# matches only exact `vigil-task-<id>` names, and the name cannot
+# collide with them.
 vigil_ensure_home_window() {
-	local windows
-	windows="$(tmux list-windows -t eip -F '#{window_name}' 2>/dev/null || true)"
+	local session="$1" windows
+	windows="$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null || true)"
 	if ! grep -Fxq "vigil-home" <<<"$windows"; then
-		tmux new-window -d -t eip -n "vigil-home"
+		tmux new-window -d -t "$session" -n "vigil-home"
 	fi
 }
 
-# DEDUP-02: create `eip` if it doesn't exist yet, rather than
-# failing. Both branches construct the identical window_name + cmd;
-# only the tmux subcommand differs (08-CONTEXT.md "eip Session
+# DEDUP-02: create the target session if it doesn't exist yet, rather
+# than failing. Both branches construct the identical window_name +
+# cmd; only the tmux subcommand differs (08-CONTEXT.md "eip Session
 # Lifecycle").
-if tmux has-session -t eip 2>/dev/null; then
-	# Retrofit the keeper window onto a pre-existing eip too, so an
-	# older session created before this behavior existed also
-	# survives its last task window closing. Done before dedup so a
-	# "skipped" run still repairs the session.
-	vigil_ensure_home_window
+if tmux has-session -t "$target_session" 2>/dev/null; then
+	# Retrofit the keeper window onto a pre-existing session too, so
+	# one created before this behavior existed also survives its last
+	# task window closing. Done before dedup so a "skipped" run still
+	# repairs the session.
+	vigil_ensure_home_window "$target_session"
 	# T-08-02 mitigation: exact-match via explicit enumeration,
-	# NEVER a `-t "eip:$window_name"` target probe -- tmux's own
-	# target resolution does prefix/glob matching, not exact
-	# matching (08-RESEARCH.md Pattern 2/Pitfall 1), so a probe
+	# NEVER a `-t "$target_session:$window_name"` target probe --
+	# tmux's own target resolution does prefix/glob matching, not
+	# exact matching (08-RESEARCH.md Pattern 2/Pitfall 1), so a probe
 	# would produce false positives against ids that share a
 	# numeric prefix (task ids are 14-digit timestamps, and later
 	# ids routinely share long prefixes with earlier ones).
-	existing="$(tmux list-windows -t eip -F '#{window_name}' 2>/dev/null || true)"
+	existing="$(tmux list-windows -t "$target_session" -F '#{window_name}' 2>/dev/null || true)"
 	if grep -Fxq "$window_name" <<<"$existing"; then
 		echo "skipped: $window_name (already running)"
 		exit 0
 	fi
 	# -d: don't steal focus from a human who might be attached to
-	# eip (08-RESEARCH.md Pattern 3 -- the new-session branch below
-	# already has -d per the original locked decision; new-window
-	# needs it added explicitly).
-	tmux new-window -d -t eip -n "$window_name" "$cmd"
+	# the target session (08-RESEARCH.md Pattern 3 -- the new-session
+	# branch below already has -d per the original locked decision;
+	# new-window needs it added explicitly).
+	tmux new-window -d -t "$target_session" -n "$window_name" "$cmd"
 else
-	tmux new-session -d -s eip -n "$window_name" "$cmd"
-	vigil_ensure_home_window
+	tmux new-session -d -s "$target_session" -n "$window_name" "$cmd"
+	vigil_ensure_home_window "$target_session"
 fi
 
-echo "spawned: $window_name (window created in eip)"
+echo "spawned: $window_name (window created in $target_session)"
 exit 0
