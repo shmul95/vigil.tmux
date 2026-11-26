@@ -136,6 +136,75 @@ fi
 # line flag has the highest precedence of all permission-mode sources.
 permission_mode="auto"
 
+# Pre-report skill: if the note's course has a dedicated weekly-report
+# skill (courses.toml [report_skill]), run it headlessly BEFORE opening
+# the interactive window, and fold its output into the prompt so the
+# human opens straight into a review/discussion of an already-drafted
+# report instead of a blank /thinking-partner. Fails open on every
+# failure mode (no course field, no mapping, missing repo dir, non-zero
+# exit, timeout) straight back to the pre-existing raw-note-body
+# behavior -- this must never block a spawn, matching SPAWN-04's gh
+# fail-open precedent above.
+course="${VIGIL_FM[course]:-}"
+courses_toml="${VIGIL_COURSES_TOML:-$HOME/shmulsidian/02_Projects/Tsinghua/courses.toml}"
+report_skill_timeout_s="${VIGIL_REPORT_SKILL_TIMEOUT_S:-600}"
+
+# Dependency-free bash lookup (matches lib/vigil-frontmatter.sh's own
+# "no external parser" philosophy): scan only inside the [report_skill]
+# table so an identically-quoted key under [submission] can never match.
+_vigil_report_skill_code() {
+	local toml_file="$1" want_course="$2"
+	[[ -f "$toml_file" ]] || return 1
+	local in_table=0 line
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line="${line%%#*}"
+		if [[ "$line" =~ ^\[([A-Za-z0-9_]+)\] ]]; then
+			[[ "${BASH_REMATCH[1]}" == "report_skill" ]] && in_table=1 || in_table=0
+			continue
+		fi
+		((in_table)) || continue
+		[[ "$line" =~ ^[[:space:]]*\"([^\"]*)\"[[:space:]]*=[[:space:]]*\"([^\"]*)\"[[:space:]]*$ ]] || continue
+		if [[ "${BASH_REMATCH[1]}" == "$want_course" ]]; then
+			printf '%s' "${BASH_REMATCH[2]}"
+			return 0
+		fi
+	done <"$toml_file"
+	return 1
+}
+
+if [[ -n "$course" ]]; then
+	if short_code="$(_vigil_report_skill_code "$courses_toml" "$course")" && [[ -n "$short_code" ]]; then
+		report_repo="${VIGIL_COURSEWORK_DIR:-$HOME/Repositories/tsinghua-coursework}/$short_code"
+		report_skill_name="${short_code,,}-weekly-report"
+		# Scope the headless pass to exactly the tools the skill's own
+		# frontmatter already declares -- never `--permission-mode auto`
+		# (a blanket bypass of every permission check for every tool).
+		# A skill with no Write/Edit in its own allowed-tools (e.g. NRE)
+		# can only read and shell out; it never gets latitude beyond
+		# what its author already wrote down. If the skill file or its
+		# allowed-tools line is missing, skip the headless pass entirely
+		# -- there is no safe default scope to fall back to.
+		report_skill_md="$report_repo/.claude/skills/$report_skill_name/SKILL.md"
+		report_allowed_tools=""
+		if [[ -f "$report_skill_md" ]]; then
+			report_allowed_tools="$(sed -n 's/^allowed-tools:[[:space:]]*//p' "$report_skill_md" | head -1)"
+		fi
+		if [[ -d "$report_repo" ]] && [[ -n "$report_allowed_tools" ]]; then
+			report_output="$(cd "$report_repo" && timeout "${report_skill_timeout_s}s" "$claude_bin" -p "/$report_skill_name" --allowedTools "$report_allowed_tools" 2>/dev/null)" || report_output=""
+			if [[ -n "$report_output" ]]; then
+				prompt_body="A draft has already been generated for this task by /$report_skill_name (run in $report_repo). Review it with the user, discuss any changes, and only treat it as submission-ready once they confirm.
+
+--- DRAFT OUTPUT ---
+$report_output
+--- END DRAFT OUTPUT ---
+
+Original task note:
+$prompt_body"
+			fi
+		fi
+	fi
+fi
+
 # tmux caps the command string handed to new-session/new-window (tmux
 # 3.7b rejects anything over ~16 KiB with "command too long"), and
 # SPAWN-04 folds the linked PR's body/reviews/comments into the
