@@ -16,6 +16,21 @@
       ];
     in
     {
+      packages = nixpkgs.lib.genAttrs systems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.tmuxPlugins.mkTmuxPlugin {
+            pluginName = "vigil";
+            version = self.rev or "dev";
+            src = self;
+            dontCheckForBrokenSymlinks = true;
+          };
+        }
+      );
+
       devShells = nixpkgs.lib.genAttrs systems (
         system:
         let
@@ -36,5 +51,7 @@
           };
         }
       );
+
+      homeManagerModules.default = import ./home-manager.nix { inherit self; };
     };
 }
